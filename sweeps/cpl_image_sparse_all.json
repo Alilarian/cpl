@@ -1,0 +1,21 @@
+{
+  "base": "configs/mw_image_sparse/cpl.yaml",
+  "paired_keys": [["eval_env", "dataset_kwargs.path"]],
+  "seed": [0, 1, 2],
+  "eval_env": [
+    "mw_bin-picking-image-v2",
+    "mw_button-press-image-v2",
+    "mw_door-open-image-v2",
+    "mw_drawer-open-image-v2",
+    "mw_plate-slide-image-v2",
+    "mw_sweep-into-image-v2"
+  ],
+  "dataset_kwargs.path": [
+    "datasets/mw/pref_image/mw_bin-picking-v2_ep2500_n0.3_img64.npz",
+    "datasets/mw/pref_image/mw_button-press-v2_ep2500_n0.3_img64.npz",
+    "datasets/mw/pref_image/mw_door-open-v2_ep2500_n0.3_img64.npz",
+    "datasets/mw/pref_image/mw_drawer-open-v2_ep2500_n0.3_img64.npz",
+    "datasets/mw/pref_image/mw_plate-slide-v2_ep2500_n0.3_img64.npz",
+    "datasets/mw/pref_image/mw_sweep-into-v2_ep2500_n0.3_img64.npz"
+  ]
+}

@@ -11,8 +11,8 @@ conda activate $ENV_NAME
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.
 
-if $WANDB_API_KEY; then
-    export WANDB_API_KEY=$WANDB_API_KEY
+if [[ -n "$WANDB_API_KEY" ]]; then
+    export WANDB_API_KEY="$WANDB_API_KEY"
 fi
 
 if $USE_MUJOCO_PY; then

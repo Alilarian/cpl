@@ -2,7 +2,7 @@
 propogate_from_main.sh
 ./datasets/
 /runs/
-
+/wandb/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

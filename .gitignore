@@ -1,6 +1,7 @@
 # Development files
 propogate_from_main.sh
 ./datasets/
+/runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

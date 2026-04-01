@@ -1,0 +1,60 @@
+alg: SAC
+alg_kwargs:
+  actor_freq: 1
+  bc_steps: 0
+  critic_freq: 1
+  init_temperature: 0.1
+  random_steps: 25000
+  target_freq: 2
+  tau: 0.005
+dataset: ReplayBuffer
+dataset_kwargs:
+  capacity: 1200000
+  distributed: false
+  fetch_every: 1000
+  path: null
+  sample_fn: sample_qlearning
+  sample_kwargs:
+    batch_size: 512
+    discount: 0.99
+    nstep: 1
+    sample_by_timesteps: false
+env: mw_bin-picking-v2
+env_kwargs:
+  sparse: false
+network: ActorCriticPolicy
+network_kwargs:
+  actor_class: DiagonalGaussianMLPActor
+  actor_kwargs:
+    log_std_bounds:
+    - -5
+    - 2
+    output_act: null
+    squash_normal: true
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2
+  hidden_layers:
+  - 256
+  - 256
+  - 256
+  ortho_init: true
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+processor: null
+seed: null
+trainer_kwargs:
+  checkpoint_freq: 10000
+  env_runner: AsyncEnv
+  eval_fn: eval_policy
+  eval_freq: 10000
+  eval_kwargs:
+    num_ep: 20
+  log_freq: 250
+  loss_metric: reward
+  profile_freq: 100
+  total_steps: 1000000
+  train_dataloader_kwargs:
+    batch_size: null
+    num_workers: 0

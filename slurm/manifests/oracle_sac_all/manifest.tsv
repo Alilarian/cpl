@@ -1,0 +1,6 @@
+slurm/manifests/oracle_sac_all/configs/0001.yaml	runs/runs/chpc/oracle_sac_all/mw_bin-picking-v2/
+slurm/manifests/oracle_sac_all/configs/0002.yaml	runs/runs/chpc/oracle_sac_all/mw_button-press-v2/
+slurm/manifests/oracle_sac_all/configs/0003.yaml	runs/runs/chpc/oracle_sac_all/mw_door-open-v2/
+slurm/manifests/oracle_sac_all/configs/0004.yaml	runs/runs/chpc/oracle_sac_all/mw_drawer-open-v2/
+slurm/manifests/oracle_sac_all/configs/0005.yaml	runs/runs/chpc/oracle_sac_all/mw_plate-slide-v2/
+slurm/manifests/oracle_sac_all/configs/0006.yaml	runs/runs/chpc/oracle_sac_all/mw_sweep-into-v2/

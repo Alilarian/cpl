@@ -4,6 +4,8 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --output=slurm/logs/%x_%A_%a.out
+#SBATCH --error=slurm/logs/%x_%A_%a.err
 
 set -euo pipefail
 

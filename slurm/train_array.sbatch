@@ -19,12 +19,34 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     exit 1
 fi
 
-MANIFEST_PATH="$1"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RAW_MANIFEST_PATH="$1"
+
+resolve_path() {
+    local target_path="$1"
+    local base_path="$2"
+    if [[ "$target_path" = /* ]]; then
+        printf '%s\n' "$target_path"
+    else
+        printf '%s\n' "${base_path}/${target_path}"
+    fi
+}
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+MANIFEST_PATH="$(resolve_path "$RAW_MANIFEST_PATH" "$SUBMIT_DIR")"
+MANIFEST_PATH="$(cd "$(dirname "$MANIFEST_PATH")" && pwd)/$(basename "$MANIFEST_PATH")"
 
 if [[ ! -f "$MANIFEST_PATH" ]]; then
     echo "Manifest not found: $MANIFEST_PATH"
+    exit 1
+fi
+
+REPO_ROOT_FROM_MANIFEST="$(cd "$(dirname "$MANIFEST_PATH")/../../.." && pwd)"
+if [[ -f "${SUBMIT_DIR}/setup_shell.sh" ]]; then
+    REPO_ROOT="$SUBMIT_DIR"
+elif [[ -f "${REPO_ROOT_FROM_MANIFEST}/setup_shell.sh" ]]; then
+    REPO_ROOT="$REPO_ROOT_FROM_MANIFEST"
+else
+    echo "Could not locate repo root from SLURM_SUBMIT_DIR=${SUBMIT_DIR} or MANIFEST_PATH=${MANIFEST_PATH}"
     exit 1
 fi
 
@@ -35,9 +57,14 @@ if [[ -z "$TASK_LINE" ]]; then
 fi
 
 IFS=$'\t' read -r CONFIG_PATH RUN_PATH <<< "$TASK_LINE"
+CONFIG_PATH="$(resolve_path "$CONFIG_PATH" "$REPO_ROOT")"
+RUN_PATH="$(resolve_path "$RUN_PATH" "$REPO_ROOT")"
 
 echo "SLURM_JOBID=${SLURM_JOB_ID:-}"
 echo "SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
+echo "SLURM_SUBMIT_DIR=${SUBMIT_DIR}"
+echo "REPO_ROOT=${REPO_ROOT}"
+echo "MANIFEST_PATH=${MANIFEST_PATH}"
 echo "CONFIG_PATH=${CONFIG_PATH}"
 echo "RUN_PATH=${RUN_PATH}"
 

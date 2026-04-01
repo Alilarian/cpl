@@ -52,7 +52,7 @@ def main() -> None:
         "--manifest-dir",
         type=str,
         default=None,
-        help="Directory to store the generated manifest and stable config files. Defaults under output-root/.slurm.",
+        help="Directory to store the generated manifest and stable config files. Defaults under slurm/manifests/<sweep_name>.",
     )
     args = parser.parse_args()
 
@@ -61,7 +61,7 @@ def main() -> None:
 
     sweep_name = os.path.splitext(os.path.basename(args.sweep))[0]
     manifest_dir = (
-        os.path.join(args.output_root, ".slurm", sweep_name) if args.manifest_dir is None else args.manifest_dir
+        os.path.join("slurm", "manifests", sweep_name) if args.manifest_dir is None else args.manifest_dir
     )
     config_dir = os.path.join(manifest_dir, "configs")
     os.makedirs(config_dir, exist_ok=True)

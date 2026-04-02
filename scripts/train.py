@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     config = Config.load(args.config)
     print(config)
-    os.makedirs(args.path, exist_ok=False)  # Change this to false temporarily so we don't recreate experiments
+    os.makedirs(args.path, exist_ok=True)  # Allow resuming from existing directories
     try_wandb_setup(args.path, config)
     config.save(args.path)  # Save the config
     # save the git hash

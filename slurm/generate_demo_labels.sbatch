@@ -28,6 +28,9 @@
 #SBATCH --output=slurm/logs/%x_%A_%a.out
 #SBATCH --error=slurm/logs/%x_%A_%a.err
 
+# Account and partition are NOT set here so they can be passed via --account /
+# --partition flags on the sbatch command line (required on most clusters).
+
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then

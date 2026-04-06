@@ -67,7 +67,7 @@ class CSVWriter(Writer):
                 self.num_keys = num_keys
                 # Create a new CSV handler with the fieldnames set.
                 self.csv_file_handler = open(self._csv_path, "a")
-                self.csv_logger = csv.DictWriter(self.csv_file_handler, fieldnames=list(fieldnames))
+                self.csv_logger = csv.DictWriter(self.csv_file_handler, fieldnames=list(fieldnames), extrasaction="ignore", restval="")
 
     def _reset_csv_handler(self):
         if self._csv_file_handler is not None:
@@ -79,9 +79,6 @@ class CSVWriter(Writer):
     def _dump(self, step):
         # Record the step
         self.values["step"] = step
-        if len(self.values) < self.num_keys:
-            # We haven't gotten all keys yet, return without doing anything.
-            return
         if len(self.values) > self.num_keys:
             # Got a new key, so re-create the writer
             self.num_keys = len(self.values)

@@ -19,7 +19,7 @@ dataset_kwargs:
     discount: 0.99
     nstep: 1
     sample_by_timesteps: false
-env: mw_sweep-into-v2
+env: mw_bin-picking-v2
 env_kwargs:
   sparse: false
 network: ActorCriticPolicy
@@ -43,7 +43,7 @@ optim: Adam
 optim_kwargs:
   lr: 0.0003
 processor: null
-seed: 0
+seed: 3
 trainer_kwargs:
   checkpoint_freq: 10000
   env_runner: AsyncEnv

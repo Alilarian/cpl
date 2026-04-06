@@ -43,7 +43,7 @@ optim: Adam
 optim_kwargs:
   lr: 0.0003
 processor: null
-seed: 0
+seed: 3
 trainer_kwargs:
   checkpoint_freq: 10000
   env_runner: AsyncEnv

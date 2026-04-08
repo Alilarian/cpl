@@ -225,20 +225,34 @@ class DemoCPL(CPL):
         logit_k = bias · adv_k     for k≥1  (counterfactuals, downweighted)
         L_demo  = -log softmax(logits)[0]
 
+    BC pretraining (optional):
+        For step < bc_steps, trains with pure BC loss on demo trajectories
+        (index 0 only):  L_bc = -mean Σ_t log π(a_t^0 | s_t^0)
+        After bc_steps:  L = L_demo + bc_coeff * L_bc
+
     Args:
         contrastive_bias : downweight for counterfactual logits (default 0.5)
                            1.0 = unbiased standard cross-entropy
+        bc_steps         : steps of BC pretraining on demo trajectories (default 0)
+        bc_coeff         : weight of BC regularization after pretraining (default 0.0)
     """
 
-    def __init__(self, *args, contrastive_bias: float = 0.5, **kwargs):
-        super().__init__(*args, contrastive_bias=contrastive_bias, **kwargs)
+    def __init__(self, *args, contrastive_bias: float = 0.5, bc_steps: int = 0,
+                 bc_coeff: float = 0.0, **kwargs):
+        super().__init__(*args, contrastive_bias=contrastive_bias,
+                         bc_steps=bc_steps, bc_coeff=bc_coeff, **kwargs)
 
     def _get_demo_loss(self, batch):
         """
-        Compute the biased K-way cross-entropy loss on a DemoBuffer batch.
+        Compute the biased K-way cross-entropy loss and BC loss on a DemoBuffer batch.
 
         batch["obs"]    : (B, K, T, obs_dim)
         batch["action"] : (B, K, T, act_dim)
+
+        Returns:
+            demo_loss : K-way cross-entropy over all K trajectories
+            bc_loss   : negative log-prob of demo trajectory (index 0) only
+            accuracy  : fraction where demo has highest advantage
         """
         B, K, T, _ = batch["obs"].shape
 
@@ -254,22 +268,46 @@ class DemoCPL(CPL):
         else:
             lp = -torch.square(dist - action).sum(dim=-1) # (B*K, T)
 
-        # Segment advantage: α · Σ_t log π(a_t | s_t)
-        seg_adv = (self.alpha * lp.sum(dim=-1)).reshape(B, K)  # (B, K)
+        lp = lp.reshape(B, K, T)                          # (B, K, T)
 
-        loss, accuracy = demo_cross_entropy(seg_adv, bias=self.contrastive_bias)
-        return loss, accuracy
+        # BC loss: imitate demo trajectory (index 0) only
+        bc_loss = -lp[:, 0, :].mean()
+
+        # Segment advantage: α · Σ_t log π(a_t | s_t)
+        seg_adv = self.alpha * lp.sum(dim=-1)              # (B, K)
+
+        demo_loss, accuracy = demo_cross_entropy(seg_adv, bias=self.contrastive_bias)
+        return demo_loss, bc_loss, accuracy
 
     def train_step(self, batch: Dict, step: int, total_steps: int) -> Dict:
-        loss, accuracy = self._get_demo_loss(batch)
+        demo_loss, bc_loss, accuracy = self._get_demo_loss(batch)
+
+        if step < self.bc_steps:
+            # Pure BC pretraining on demo trajectories
+            loss = bc_loss
+            demo_loss = torch.tensor(0.0)
+            accuracy  = torch.tensor(0.0)
+        else:
+            loss = demo_loss + self.bc_coeff * bc_loss
 
         self.optim["actor"].zero_grad()
         loss.backward()
         self.optim["actor"].step()
 
-        return dict(demo_loss=loss.item(), accuracy=accuracy.item())
+        if step == self.bc_steps - 1:
+            # Reset optimizer and start LR schedule after BC phase
+            del self.optim["actor"]
+            params = itertools.chain(self.network.actor.parameters(),
+                                     self.network.encoder.parameters())
+            groups = utils.create_optim_groups(params, self.optim_kwargs)
+            self.optim["actor"] = self.optim_class(groups)
+            self.setup_schedulers(do_nothing=False)
+
+        return dict(demo_loss=demo_loss.item(), bc_loss=bc_loss.item(),
+                    accuracy=accuracy.item())
 
     def validation_step(self, batch: Any) -> Dict:
         with torch.no_grad():
-            loss, accuracy = self._get_demo_loss(batch)
-        return dict(demo_loss=loss.item(), accuracy=accuracy.item())
+            demo_loss, bc_loss, accuracy = self._get_demo_loss(batch)
+        return dict(demo_loss=demo_loss.item(), bc_loss=bc_loss.item(),
+                    accuracy=accuracy.item())

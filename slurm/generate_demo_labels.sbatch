@@ -13,7 +13,7 @@
 #          slurm/generate_demo_labels.sbatch
 #
 # Optional overrides (set before sbatch or via --export):
-#   ORACLE_RUNS_BASE      default: runs/runs/chpc/oracle_sac_all
+#   ORACLE_RUNS_BASE      default: /scratch/general/vast/u1472210/oracle_sac_all
 #   POOL_DIR              default: datasets/demo_pool
 #   OUTPUT_DIR            default: datasets/demo_labels
 #   N_COUNTERFACTUALS     default: 6  (K=7: 1 demo + 6 counterfactuals)
@@ -49,7 +49,7 @@ else
 fi
 
 # Defaults
-ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_all}"
+ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-/scratch/general/vast/u1472210/oracle_sac_all}"
 POOL_DIR="${POOL_DIR:-datasets/demo_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-datasets/demo_labels}"
 N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-6}"

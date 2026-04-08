@@ -11,7 +11,7 @@
 #          slurm/build_trajectory_pool.sbatch
 #
 # Optional overrides (set before sbatch or via --export):
-#   ORACLE_RUNS_BASE   default: runs/runs/chpc/oracle_sac_all
+#   ORACLE_RUNS_BASE   default: /scratch/general/vast/u1472210/oracle_sac_all
 #   OUTPUT_DIR         default: datasets/demo_pool
 #   CHECKPOINT_INTERVAL default: 20000
 #   N_EPISODES         default: 10
@@ -45,7 +45,7 @@ else
 fi
 
 # Defaults (can be overridden via environment variables)
-ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_all}"
+ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-/scratch/general/vast/u1472210/oracle_sac_all}"
 OUTPUT_DIR="${OUTPUT_DIR:-datasets/demo_pool}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-20000}"
 N_EPISODES="${N_EPISODES:-10}"

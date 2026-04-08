@@ -61,7 +61,7 @@ class MetaWorldSawyerEnv(gym.Env):
         self._split_shapes = np.cumsum(
             np.array([qpos.shape[0], qvel.shape[0], mocap_pos.shape[1], mocap_quat.shape[1]])
         )
-        return np.concatenate([qpos, qvel, mocap_pos[0], mocap_quat[0], self._env._last_rand_vec], axis=0)
+        return np.concatenate([qpos, qvel, mocap_pos[0], mocap_quat[0], np.atleast_1d(self._env._last_rand_vec)], axis=0)
 
     def set_state(self, state):
         joint_state = self._env.sim.get_state()

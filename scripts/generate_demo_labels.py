@@ -164,9 +164,15 @@ def rollout_from_state(model, env, s0, segment_length, device):
     Returns (obs, action, reward) each (T, dim), or None if episode ends early.
     """
     env.set_state(s0)
-    # Reset TimeLimit's elapsed step counter if present (env may be TimeLimit-wrapped)
-    if hasattr(env, '_elapsed_steps'):
-        env._elapsed_steps = 0
+    # Reset wrapper state counters so the episode can proceed without calling reset()
+    # Walk the wrapper stack and fix any relevant flags/counters
+    w = env
+    while w is not None:
+        if hasattr(w, '_elapsed_steps'):   # TimeLimit
+            w._elapsed_steps = 0
+        if hasattr(w, '_has_reset'):       # OrderEnforcing
+            w._has_reset = True
+        w = getattr(w, 'env', None)
     obs = env.get_obs().astype(np.float32)
 
     ep_obs, ep_act, ep_rew = [], [], []

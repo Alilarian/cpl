@@ -6,9 +6,16 @@ USE_MUJOCO_PY=true # For using mujoco py
 WANDB_API_KEY="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" # If you want to use wandb, set this to your API key.
 
 # Setup Conda
-module load miniconda3 2>/dev/null || true
-source $CONDA_PATH
-conda activate $ENV_NAME
+# module load miniconda3 sets up conda shell functions; sourcing the activate
+# script on top of that corrupts the activation. Use one or the other:
+#   - On CHPC (module system): load module, then conda activate directly.
+#   - On local machines without modules: source activate script, then conda activate.
+if module load miniconda3 2>/dev/null; then
+    conda activate $ENV_NAME
+else
+    source $CONDA_PATH
+    conda activate $ENV_NAME
+fi
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.
 

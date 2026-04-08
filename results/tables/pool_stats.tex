@@ -1,0 +1,17 @@
+\begin{table}[ht]
+\centering
+\caption{Trajectory Pool Statistics (Phase 3). Reward is the undiscounted sum over $T=50$ steps. Disc.\ Reward uses $\gamma=0.99$.}
+\label{tab:pool_stats}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+Environment & $N$ & $T$ & Reward $\mu \pm \sigma$ & Reward [min, max] & Disc.\ Reward $\mu \pm \sigma$ & \#Ckpts & Step Range \\
+\midrule
+Bin Pick & 16400 & 50 & $6.86 \pm 14.58$ & $[0.00,\, 50.00]$ & $5.35 \pm 11.45$ & 41 & $[0,\, 800000]$ \\
+Button & 16000 & 50 & $30.30 \pm 13.99$ & $[0.27,\, 48.49]$ & $23.80 \pm 11.14$ & 40 & $[0,\, 780000]$ \\
+Door & 15600 & 50 & $37.27 \pm 16.77$ & $[1.73,\, 50.00]$ & $29.16 \pm 13.39$ & 39 & $[0,\, 760000]$ \\
+Drawer & 16800 & 50 & $38.72 \pm 12.51$ & $[3.64,\, 49.05]$ & $30.40 \pm 9.99$ & 42 & $[0,\, 820000]$ \\
+Plate Slide & 16000 & 50 & $37.83 \pm 17.64$ & $[0.56,\, 50.00]$ & $29.60 \pm 14.09$ & 40 & $[0,\, 780000]$ \\
+\bottomrule
+\end{tabular}}
+\end{table}

@@ -1,0 +1,17 @@
+\begin{table}[ht]
+\centering
+\caption{Demonstrative Feedback Dataset Statistics (Phase 4). $K=7$ choice sets. Demo = position 0 (best by $\widehat{A}^*$). Adv.\ Gap $= \text{rl\_sum}[0] - \text{rl\_sum}[K{-}1]$.}
+\label{tab:demo_stats}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrrr}
+\toprule
+Environment & $N$ & Skip & Demo Rew $\mu$ & Demo $\widehat{A}^*$ $\mu \pm \sigma$ & Adv.\ Gap $\mu \pm \sigma$ & Adv.\ Gap [min, max] & Disc.\ Rew $\mu$ & Diversity \\
+\midrule
+Bin Pick & 16400 & 0.0\% & 9.66 & $50.89 \pm 32.46$ & $62.66 \pm 38.94$ & $[0.46,\, 269.01]$ & 7.27 & 11.08 \\
+Button & 16000 & 0.0\% & 32.90 & $54.07 \pm 14.82$ & $42.36 \pm 19.23$ & $[0.98,\, 131.27]$ & 25.64 & 7.69 \\
+Door & 15600 & 0.0\% & 38.22 & $62.14 \pm 16.95$ & $31.75 \pm 15.33$ & $[0.47,\, 99.12]$ & 29.82 & 6.36 \\
+Drawer & 16800 & 0.0\% & 41.14 & $55.23 \pm 8.01$ & $26.42 \pm 16.13$ & $[0.90,\, 99.78]$ & 32.14 & 9.03 \\
+Plate Slide & 16000 & 0.0\% & 39.37 & $70.86 \pm 20.52$ & $33.90 \pm 25.80$ & $[0.16,\, 204.27]$ & 30.66 & 8.67 \\
+\bottomrule
+\end{tabular}}
+\end{table}

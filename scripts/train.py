@@ -13,8 +13,10 @@ def try_wandb_setup(path, config):
         except ImportError:
             return
         project_dir = os.path.dirname(os.path.dirname(__file__))
+        # Allow overriding the W&B project name via WANDB_PROJECT env var
+        project_name = os.getenv("WANDB_PROJECT", os.path.basename(project_dir))
         wandb.init(
-            project=os.path.basename(project_dir),
+            project=project_name,
             name=os.path.basename(path),
             config=config.flatten(separator="-"),
             dir=os.path.join(os.path.dirname(project_dir), "wandb"),

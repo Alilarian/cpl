@@ -80,6 +80,8 @@ class MetaWorldSawyerEnv(gym.Env):
         joint_state.qvel[:] = qvel
         self._env.set_env_state((joint_state, (np.expand_dims(mocap_pos, axis=0), np.expand_dims(mocap_quat, axis=0))))
         self._env.sim.forward()
+        # Reset episode step counter so segments can always run to full length
+        self._episode_steps = 0
 
     def reset(self, **kwargs):
         self._episode_steps = 0

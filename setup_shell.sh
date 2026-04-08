@@ -1,15 +1,16 @@
 # Make sure we have the conda environment set up.
 CONDA_PATH=~/miniconda3/bin/activate
 ENV_NAME=cpl
-REPO_PATH=path/to/your/repo
+REPO_PATH="${REPO_ROOT:-path/to/your/repo}"
 USE_MUJOCO_PY=true # For using mujoco py
-WANDB_API_KEY="" # If you want to use wandb, set this to your API key.
+WANDB_API_KEY="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" # If you want to use wandb, set this to your API key.
 
 # Setup Conda
 source $CONDA_PATH
 conda activate $ENV_NAME
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.
+
 
 if [[ -n "$WANDB_API_KEY" ]]; then
     export WANDB_API_KEY="$WANDB_API_KEY"

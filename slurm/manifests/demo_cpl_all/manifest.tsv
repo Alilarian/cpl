@@ -1,0 +1,5 @@
+slurm/manifests/demo_cpl_all/configs/0001.yaml	runs/runs/chpc/demo_cpl_all/mw_bin-picking-v2/path-mw_bin_picking/seed-0
+slurm/manifests/demo_cpl_all/configs/0002.yaml	runs/runs/chpc/demo_cpl_all/mw_button-press-v2/path-mw_button_press/seed-0
+slurm/manifests/demo_cpl_all/configs/0003.yaml	runs/runs/chpc/demo_cpl_all/mw_door-open-v2/path-mw_door_open/seed-0
+slurm/manifests/demo_cpl_all/configs/0004.yaml	runs/runs/chpc/demo_cpl_all/mw_drawer-open-v2/path-mw_drawer_open/seed-0
+slurm/manifests/demo_cpl_all/configs/0005.yaml	runs/runs/chpc/demo_cpl_all/mw_plate-slide-v2/path-mw_plate_slide/seed-0

@@ -1,0 +1,49 @@
+alg: DemoCPL
+alg_kwargs:
+  alpha: 0.1
+  contrastive_bias: 0.5
+checkpoint: null
+dataset: DemoBuffer
+dataset_kwargs:
+  path: /scratch/general/vast/u1472210/demo_labels/mw_plate-slide-v2/demo_labels_K7.npz
+  batch_size: 96
+  segment_length: null
+  reward_scale: 1.0
+  reward_shift: 0.0
+eval_env: mw_plate-slide-v2
+network: ActorPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    dropout: 0.25
+    hidden_layers:
+    - 512
+    - 512
+    ortho_init: true
+    output_act:
+    - import
+    - torch.nn
+    - Tanh
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+processor: null
+schedule:
+  actor: linear_warmup
+schedule_kwargs:
+  actor:
+    multiplier: 1.0
+    total_steps: 10000
+seed: 0
+trainer_kwargs:
+  eval_fn: eval_policy
+  eval_freq: 5000
+  eval_kwargs:
+    num_ep: 25
+  log_freq: 500
+  loss_metric: reward
+  profile_freq: 500
+  total_steps: 500000
+  train_dataloader_kwargs:
+    batch_size: null
+    num_workers: 0

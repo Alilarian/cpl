@@ -54,6 +54,9 @@ class MetaWorldSawyerEnv(gym.Env):
     def _get_obs(self):
         return trim_mw_obs(self._env._get_obs())
 
+    def get_obs(self):
+        return self._get_obs()
+
     def get_state(self):
         joint_state, mocap_state = self._env.get_env_state()
         qpos, qvel = joint_state.qpos, joint_state.qvel

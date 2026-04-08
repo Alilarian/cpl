@@ -164,7 +164,7 @@ def rollout_from_state(model, env, s0, segment_length, device):
     Returns (obs, action, reward) each (T, dim), or None if episode ends early.
     """
     env.set_state(s0)
-    obs = env._get_obs().astype(np.float32)
+    obs = env.get_obs().astype(np.float32)
 
     ep_obs, ep_act, ep_rew = [], [], []
 

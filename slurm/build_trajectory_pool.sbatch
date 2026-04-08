@@ -59,8 +59,9 @@ ENVS_FILE="${ENVS_FILE:-slurm/manifests/demo_pool/envs.txt}"
 [[ "$ENVS_FILE"        != /* ]] && ENVS_FILE="${REPO_ROOT}/${ENVS_FILE}"
 
 # Pick the Nth environment from the list
-ENV_NAME="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$ENVS_FILE")"
-if [[ -z "$ENV_NAME" ]]; then
+# Use TASK_ENV (not ENV_NAME) to avoid collision with setup_shell.sh's ENV_NAME=cpl
+TASK_ENV="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$ENVS_FILE")"
+if [[ -z "$TASK_ENV" ]]; then
     echo "No environment for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID} in ${ENVS_FILE}"
     exit 1
 fi
@@ -68,7 +69,7 @@ fi
 echo "=============================="
 echo "SLURM_JOB_ID    = ${SLURM_JOB_ID:-}"
 echo "ARRAY_TASK_ID   = ${SLURM_ARRAY_TASK_ID}"
-echo "ENV              = ${ENV_NAME}"
+echo "TASK_ENV         = ${TASK_ENV}"
 echo "ORACLE_RUNS_BASE = ${ORACLE_RUNS_BASE}"
 echo "OUTPUT_DIR       = ${OUTPUT_DIR}"
 echo "=============================="
@@ -77,7 +78,7 @@ echo "=============================="
 
 python3 "${REPO_ROOT}/scripts/build_trajectory_pool.py" \
     --oracle-runs-base "$ORACLE_RUNS_BASE" \
-    --envs "$ENV_NAME" \
+    --envs "$TASK_ENV" \
     --checkpoint-interval "$CHECKPOINT_INTERVAL" \
     --n-episodes-per-checkpoint "$N_EPISODES" \
     --n-segments-per-checkpoint "$N_SEGMENTS" \

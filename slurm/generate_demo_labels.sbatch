@@ -66,19 +66,20 @@ ENVS_FILE="${ENVS_FILE:-slurm/manifests/demo_pool/envs.txt}"
 [[ "$ENVS_FILE"        != /* ]] && ENVS_FILE="${REPO_ROOT}/${ENVS_FILE}"
 
 # Pick the Nth environment
-ENV_NAME="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$ENVS_FILE")"
-if [[ -z "$ENV_NAME" ]]; then
+# Use TASK_ENV (not ENV_NAME) to avoid collision with setup_shell.sh's ENV_NAME=cpl
+TASK_ENV="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$ENVS_FILE")"
+if [[ -z "$TASK_ENV" ]]; then
     echo "No environment for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID} in ${ENVS_FILE}"
     exit 1
 fi
 
-POOL_PATH="${POOL_DIR}/${ENV_NAME}/pool.npz"
-RUN_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}"
+POOL_PATH="${POOL_DIR}/${TASK_ENV}/pool.npz"
+RUN_DIR="${ORACLE_RUNS_BASE}/${TASK_ENV}"
 
 echo "=============================="
 echo "SLURM_JOB_ID         = ${SLURM_JOB_ID:-}"
 echo "ARRAY_TASK_ID        = ${SLURM_ARRAY_TASK_ID}"
-echo "ENV                  = ${ENV_NAME}"
+echo "TASK_ENV             = ${TASK_ENV}"
 echo "POOL_PATH            = ${POOL_PATH}"
 echo "RUN_DIR              = ${RUN_DIR}"
 echo "N_COUNTERFACTUALS    = ${N_COUNTERFACTUALS}  (K=$((N_COUNTERFACTUALS + 1)))"

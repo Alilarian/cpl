@@ -52,6 +52,48 @@ def biased_bce_with_scores(adv, scores, bias=1.0):
     return loss, accuracy
 
 
+def demo_cross_entropy(adv, bias=0.5):
+    """
+    K-way cross-entropy loss for demonstrative feedback (ARIC formulation).
+
+    Demo is always at index 0. Counterfactuals (indices 1..K-1) are
+    downweighted by bias before the softmax, making them harder to
+    compete with the demonstration.
+
+        logits_0   = adv[:, 0]              (demo — unbiased)
+        logits_k   = bias * adv[:, k]       (counterfactuals, k >= 1)
+        L_demo     = -log softmax(logits)[0]
+                   = -adv_0 + log(exp(adv_0) + Σ_{k≥1} exp(bias * adv_k))
+
+    When bias=1.0 → standard cross-entropy (unbiased ARIC).
+    When bias<1.0 → counterfactual logits shrunk → harder for them to
+                    dominate → stronger push toward the demonstration.
+
+    With K=2 and bias<1 this exactly recovers biased_bce_with_logits.
+
+    Args:
+        adv  : (B, K)  segment advantages, index 0 = demonstration
+        bias : float   downweight for counterfactual logits (default 0.5)
+
+    Returns:
+        loss     : scalar
+        accuracy : fraction of batches where demo has highest advantage
+    """
+    # Apply bias to counterfactuals only
+    bias_weights        = adv.new_ones(adv.shape)
+    bias_weights[:, 1:] = bias
+    logits = bias_weights * adv                          # (B, K)
+
+    # Numerically stable log-softmax at index 0
+    log_softmax = logits[:, 0] - torch.logsumexp(logits, dim=1)
+    loss = -log_softmax.mean()
+
+    with torch.no_grad():
+        accuracy = (adv[:, 0] == adv.max(dim=1).values).float().mean()
+
+    return loss, accuracy
+
+
 class CPL(OffPolicyAlgorithm):
     def __init__(
         self,
@@ -163,3 +205,71 @@ class CPL(OffPolicyAlgorithm):
         with torch.no_grad():
             action = self.predict(batch, is_batched=False, sample=True)
         return action
+
+
+class DemoCPL(CPL):
+    """
+    CPL variant trained purely on demonstrative feedback (Phase 6).
+
+    Uses the K-way biased cross-entropy loss (ARIC formulation) instead
+    of pairwise preference BCE. Each training batch comes from DemoBuffer:
+
+        obs    : (B, K, T, obs_dim)   index 0 = demonstration
+        action : (B, K, T, act_dim)
+        reward : (B, K, T)
+        label  : (B,)                 always 0
+
+    The loss is:
+        adv_k   = α · Σ_t log π(a_t^k | s_t^k)      for each k in 0..K-1
+        logit_k = adv_k            for k=0  (demo, unbiased)
+        logit_k = bias · adv_k     for k≥1  (counterfactuals, downweighted)
+        L_demo  = -log softmax(logits)[0]
+
+    Args:
+        contrastive_bias : downweight for counterfactual logits (default 0.5)
+                           1.0 = unbiased standard cross-entropy
+    """
+
+    def __init__(self, *args, contrastive_bias: float = 0.5, **kwargs):
+        super().__init__(*args, contrastive_bias=contrastive_bias, **kwargs)
+
+    def _get_demo_loss(self, batch):
+        """
+        Compute the biased K-way cross-entropy loss on a DemoBuffer batch.
+
+        batch["obs"]    : (B, K, T, obs_dim)
+        batch["action"] : (B, K, T, act_dim)
+        """
+        B, K, T, _ = batch["obs"].shape
+
+        # Flatten B and K into one batch dimension for a single encoder pass
+        obs    = batch["obs"].reshape(B * K, T, -1)       # (B*K, T, obs_dim)
+        action = batch["action"].reshape(B * K, T, -1)    # (B*K, T, act_dim)
+
+        obs_enc = self.network.encoder(obs)                # (B*K, T, D)
+        dist    = self.network.actor(obs_enc)
+
+        if isinstance(dist, torch.distributions.Distribution):
+            lp = dist.log_prob(action)                     # (B*K, T)
+        else:
+            lp = -torch.square(dist - action).sum(dim=-1) # (B*K, T)
+
+        # Segment advantage: α · Σ_t log π(a_t | s_t)
+        seg_adv = (self.alpha * lp.sum(dim=-1)).reshape(B, K)  # (B, K)
+
+        loss, accuracy = demo_cross_entropy(seg_adv, bias=self.contrastive_bias)
+        return loss, accuracy
+
+    def train_step(self, batch: Dict, step: int, total_steps: int) -> Dict:
+        loss, accuracy = self._get_demo_loss(batch)
+
+        self.optim["actor"].zero_grad()
+        loss.backward()
+        self.optim["actor"].step()
+
+        return dict(demo_loss=loss.item(), accuracy=accuracy.item())
+
+    def validation_step(self, batch: Any) -> Dict:
+        with torch.no_grad():
+            loss, accuracy = self._get_demo_loss(batch)
+        return dict(demo_loss=loss.item(), accuracy=accuracy.item())

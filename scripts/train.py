@@ -28,9 +28,12 @@ if __name__ == "__main__":
     parser.add_argument("--config", "-c", type=str, default=None)
     parser.add_argument("--path", "-p", type=str, default=None)
     parser.add_argument("--device", "-d", type=str, default="auto")
+    parser.add_argument("--seed", "-s", type=int, default=None, help="Override the seed in the config")
     args = parser.parse_args()
 
     config = Config.load(args.config)
+    if args.seed is not None:
+        config["seed"] = args.seed
     print(config)
     os.makedirs(args.path, exist_ok=True)  # Allow resuming from existing directories
     try_wandb_setup(args.path, config)

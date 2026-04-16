@@ -16,3 +16,17 @@ try:
         register(id=ID, entry_point="research.envs.metaworld:get_mw_image_env", kwargs={"env_name": env_name})
 except ImportError:
     print("[research] Warning: Could not import MetaWorld Environments.")
+
+try:
+    register(
+        id="LunarLanderContinuous-cpl-v0",
+        entry_point="research.envs.lunar_lander:LunarLanderEnv",
+        kwargs={"sparse": False},
+    )
+    register(
+        id="LunarLanderContinuous-cpl-sparse-v0",
+        entry_point="research.envs.lunar_lander:LunarLanderEnv",
+        kwargs={"sparse": True},
+    )
+except Exception:
+    print("[research] Warning: Could not register LunarLander environments.")

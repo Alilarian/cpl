@@ -1,0 +1,62 @@
+alg: SAC
+alg_kwargs:
+  tau: 0.01             # From multi-type-feedback SAC hparams for LunarLanderContinuous
+  init_temperature: 0.1
+  critic_freq: 1
+  actor_freq: 1
+  target_freq: 2
+  random_steps: 10000
+  bc_steps: 0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.00073           # 7.3e-4, from multi-type-feedback hparams
+
+network: ActorCriticPolicy
+network_kwargs:
+  actor_class: DiagonalGaussianMLPActor
+  actor_kwargs:
+    log_std_bounds: [-5, 2]
+    squash_normal: True
+    output_act: null
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2
+  hidden_layers: [400, 300]   # From multi-type-feedback SAC hparams
+  ortho_init: true
+
+env: LunarLanderContinuous-cpl-v0
+eval_env: LunarLanderContinuous-cpl-v0
+env_kwargs: {}
+
+dataset: ReplayBuffer
+dataset_kwargs:
+  path: null
+  sample_fn: sample_qlearning
+  sample_kwargs:
+    discount: 0.99
+    nstep: 1
+    batch_size: 256
+    sample_by_timesteps: False
+  capacity: 1000000
+  fetch_every: 1000
+  distributed: False
+
+processor: null
+
+trainer_kwargs:
+  total_steps: 500000
+  log_freq: 250
+  profile_freq: 100
+  env_runner: AsyncEnv
+  eval_freq: 10000
+  checkpoint_freq: 10000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 20
+  loss_metric: reward
+  train_dataloader_kwargs:
+    batch_size: null
+    num_workers: 0
+
+seed: null

@@ -1,10 +1,16 @@
 """
 LunarLander continuous environment wrapper for CPL.
 
-Uses gymnasium's LunarLanderContinuous (v3) internally with:
+Uses gymnasium LunarLander-v3 internally with:
   - Wind and turbulence disabled (fully deterministic physics)
   - Continuous action space (2-dim: main engine + lateral)
   - gym 0.23 API exposed outward (4-tuple step, single obs from reset)
+
+gym 0.23's box2d is incompatible with numpy 2.x (b2Vec2 conversion
+error). gymnasium's box2d package handles numpy 2.x correctly, so
+gymnasium is used internally while the outward-facing API stays gym 0.23.
+
+Requires: pip install "gymnasium[box2d]"
 
 Implements get_state() / set_state() following the same pattern as
 MetaWorldSawyerEnv so the env can be used with CPL's dataset collection
@@ -17,10 +23,15 @@ import numpy as np
 
 class LunarLanderEnv(gym.Env):
     def __init__(self, sparse: bool = False, horizon: int = 1000):
-        import gymnasium as gymn
-        from gymnasium.envs.box2d.lunar_lander import FPS, LEG_DOWN, SCALE, VIEWPORT_H, VIEWPORT_W
+        try:
+            import gymnasium as gymn
+            from gymnasium.envs.box2d.lunar_lander import FPS, LEG_DOWN, SCALE, VIEWPORT_H, VIEWPORT_W
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(
+                "gymnasium is required for LunarLanderEnv.\n"
+                "Install it with: pip install \"gymnasium[box2d]\""
+            )
 
-        # Store physics constants needed for get_obs()
         self.FPS = FPS
         self.LEG_DOWN = LEG_DOWN
         self.SCALE = SCALE
@@ -52,7 +63,7 @@ class LunarLanderEnv(gym.Env):
         )
 
     # ------------------------------------------------------------------
-    # Core gym API (4-tuple step, single obs from reset — gym 0.23 style)
+    # Core gym 0.23 API (4-tuple step, single obs from reset)
     # ------------------------------------------------------------------
 
     def reset(self, **kwargs):
@@ -85,8 +96,7 @@ class LunarLanderEnv(gym.Env):
 
     # ------------------------------------------------------------------
     # State save / restore  (required for CPL dataset collection)
-    # Mirrors LunarLanderSaveLoadWrapper from multi-type-feedback,
-    # adapted to numpy-serialisable dict for compatibility with CPL runners.
+    # Ported from multi-type-feedback LunarLanderSaveLoadWrapper.
     # ------------------------------------------------------------------
 
     def get_state(self):
@@ -141,7 +151,7 @@ class LunarLanderEnv(gym.Env):
         uw = self._env.unwrapped
         pos = uw.lander.position
         vel = uw.lander.linearVelocity
-        obs = np.array(
+        return np.array(
             [
                 (pos.x - self.VIEWPORT_W / self.SCALE / 2) / (self.VIEWPORT_W / self.SCALE / 2),
                 (pos.y - (uw.helipad_y + self.LEG_DOWN / self.SCALE)) / (self.VIEWPORT_H / self.SCALE / 2),
@@ -154,7 +164,6 @@ class LunarLanderEnv(gym.Env):
             ],
             dtype=np.float32,
         )
-        return obs
 
     def get_obs(self):
         return self._get_obs()

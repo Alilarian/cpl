@@ -19,6 +19,13 @@ fi
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.
 
+# Install gymnasium if not present — required for LunarLander.
+# gym 0.23's box2d is incompatible with numpy 2.x; gymnasium's box2d fixes this.
+if ! python -c "import gymnasium" 2>/dev/null; then
+    echo "Installing gymnasium[box2d] and pygame..."
+    pip install -q "gymnasium[box2d]" pygame
+fi
+
 
 if [[ -n "$WANDB_API_KEY" ]]; then
     export WANDB_API_KEY="$WANDB_API_KEY"

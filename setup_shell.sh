@@ -6,11 +6,11 @@ USE_MUJOCO_PY=true # For using mujoco py
 WANDB_API_KEY="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" # If you want to use wandb, set this to your API key.
 
 # Setup Conda
-# module load miniconda3 sets up conda shell functions; sourcing the activate
-# script on top of that corrupts the activation. Use one or the other:
-#   - On CHPC (module system): load module, then conda activate directly.
-#   - On local machines without modules: source activate script, then conda activate.
+# In non-interactive SLURM jobs, module load miniconda3 adds conda to PATH
+# but does NOT initialize the shell functions that conda activate requires.
+# We must always source conda.sh explicitly before calling conda activate.
 if module load miniconda3 2>/dev/null; then
+    source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate $ENV_NAME
 else
     source $CONDA_PATH

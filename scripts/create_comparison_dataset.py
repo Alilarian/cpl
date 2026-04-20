@@ -2,9 +2,7 @@ import argparse
 import collections
 import io
 import os
-
 import numpy as np
-
 from research.datasets import ReplayBuffer
 from research.utils import utils
 from research.utils.config import Config

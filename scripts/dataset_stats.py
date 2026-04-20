@@ -1,6 +1,6 @@
 """
-Compute summary statistics for the trajectory pool (Phase 3) and
-demonstrative feedback dataset (Phase 4).
+Compute summary statistics for the trajectory pool (Phase 3),
+demonstrative feedback dataset (Phase 4), and corrective feedback dataset.
 
 Outputs a per-environment statistics table to stdout and saves a CSV.
 
@@ -22,16 +22,27 @@ Demo labels (demo_labels_K*.npz):
     (measures counterfactual coverage / spread)
   - Checkpoint step coverage of kept segments: n_unique, min, max
 
+Corrective labels (corr_labels.npz):
+  - N kept, skip rate vs pool
+  - Expert (pos 0) rl_sum: mean, std, min, max
+  - Original (pos 1) rl_sum: mean, std, min, max
+  - Improvement (expert - original rl_sum): mean, std, min, max
+  - Expert undiscounted reward: mean
+  - Original undiscounted reward: mean
+  - Checkpoint step coverage: n_unique, min, max
+
 Usage (on CHPC):
     python scripts/dataset_stats.py \\
         --pool-dir /scratch/general/vast/u1472210/demo_pool \\
         --labels-dir /scratch/general/vast/u1472210/demo_labels \\
+        --corr-labels-dir /scratch/general/vast/u1472210/corr_labels \\
         --output results/dataset_stats.csv
 
 Usage (local, if data synced):
     python scripts/dataset_stats.py \\
-        --pool-dir datasets/demo_pool \\
-        --labels-dir datasets/demo_labels
+        --pool-dir datasets/mw/demo_pool \\
+        --labels-dir datasets/mw/demo_labels \\
+        --corr-labels-dir datasets/mw/corr_labels
 """
 
 import argparse
@@ -190,6 +201,45 @@ def find_labels_file(labels_dir, env_name):
     return None
 
 
+def corr_stats(corr_path, pool_N):
+    print(f"  Loading corr labels: {corr_path}")
+    d = np.load(corr_path)
+    obs        = d["obs"]             # (N, 2, T, obs_dim)
+    reward     = d["reward"]          # (N, 2, T)
+    adv_scores = d["adv_scores"]      # (N, 2)  [expert_rl_sum, original_rl_sum]
+    improvement = d["improvement"]    # (N,)
+    ckpt        = d["checkpoint_step"] # (N,)
+
+    N = obs.shape[0]
+    skip_rate = 1.0 - N / pool_N if pool_N > 0 else float("nan")
+
+    expert_reward   = reward[:, 0, :].sum(axis=1)   # (N,) undiscounted
+    original_reward = reward[:, 1, :].sum(axis=1)
+
+    expert_disc   = discounted_sum(reward[:, 0, :], DISCOUNT)
+    original_disc = discounted_sum(reward[:, 1, :], DISCOUNT)
+
+    unique_ckpts = np.unique(ckpt)
+
+    row = {
+        "corr_N":         N,
+        "corr_skip_rate": round(skip_rate, 4),
+    }
+    row.update(stats_dict(adv_scores[:, 0], "corr_expert_rl_sum"))
+    row.update(stats_dict(adv_scores[:, 1], "corr_original_rl_sum"))
+    row.update(stats_dict(improvement,       "corr_improvement"))
+
+    row["corr_expert_reward_mean"]      = float(expert_reward.mean())
+    row["corr_original_reward_mean"]    = float(original_reward.mean())
+    row["corr_expert_disc_reward_mean"] = float(expert_disc.mean())
+
+    row["corr_ckpt_n_unique"] = len(unique_ckpts)
+    row["corr_ckpt_min"]      = int(unique_ckpts.min())
+    row["corr_ckpt_max"]      = int(unique_ckpts.max())
+
+    return row
+
+
 def print_table(rows, env_names):
     keys = [
         ("pool_N",                       "Pool N"),
@@ -250,6 +300,11 @@ def main():
         default="/scratch/general/vast/u1472210/demo_labels",
         help="Root dir containing <env>/demo_labels_K*.npz files.",
     )
+    parser.add_argument(
+        "--corr-labels-dir", type=str,
+        default=None,
+        help="Root dir containing <env>/corr_labels.npz files (optional).",
+    )
     parser.add_argument("--envs", nargs="+", default=ENVS_ALL,
                         help="Environments to process (default: all 5).")
     parser.add_argument("--output", type=str, default="results/dataset_stats.csv",
@@ -282,6 +337,14 @@ def main():
         else:
             print(f"  [SKIP] demo_labels_K*.npz not found in: "
                   f"{os.path.join(args.labels_dir, env_name)}")
+
+        if args.corr_labels_dir:
+            corr_path = os.path.join(args.corr_labels_dir, env_name, "corr_labels.npz")
+            if os.path.exists(corr_path):
+                row.update(corr_stats(corr_path, pool_N))
+                has_data = True
+            else:
+                print(f"  [SKIP] corr_labels.npz not found: {corr_path}")
 
         all_rows.append(row if has_data else None)
         env_names.append(env_name)

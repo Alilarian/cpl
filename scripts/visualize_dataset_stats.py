@@ -267,6 +267,105 @@ def fig_action_diversity(df, out_dir):
     savefig(fig, os.path.join(out_dir, "figures", "action_diversity.pdf"))
 
 
+def latex_corr_table(df, path):
+    """LaTeX table for corrective feedback dataset statistics."""
+    required = ["corr_N", "corr_expert_rl_sum_mean", "corr_improvement_mean"]
+    if not all(c in df.columns for c in required):
+        print("  [SKIP] No corrective stats found in CSV — skipping corr_stats.tex")
+        return
+    df_c = df.dropna(subset=required)
+    if df_c.empty:
+        print("  [SKIP] Corrective stats all NaN — skipping corr_stats.tex")
+        return
+
+    lines = [
+        r"\begin{table}[ht]",
+        r"\centering",
+        r"\caption{Corrective Feedback Dataset Statistics. "
+        r"$K=2$: index 0 = expert correction (best by $\widehat{A}^*$), "
+        r"index 1 = original pool segment. "
+        r"Improvement $= \widehat{A}^*(\text{expert}) - \widehat{A}^*(\text{original})$.}",
+        r"\label{tab:corr_stats}",
+        r"\resizebox{\textwidth}{!}{%",
+        r"\begin{tabular}{lrrrrrrrr}",
+        r"\toprule",
+        r"Environment & $N$ & Skip & "
+        r"Expert Rew $\mu$ & Expert $\widehat{A}^*$ $\mu$ & "
+        r"Original $\widehat{A}^*$ $\mu$ & "
+        r"Improvement $\mu \pm \sigma$ & Improvement [min, max] & "
+        r"Expert Disc.\ Rew $\mu$ \\",
+        r"\midrule",
+    ]
+    for _, r in df_c.iterrows():
+        env      = ENV_SHORT.get(r["env"], r["env"])
+        skip_pct = f"{float(r['corr_skip_rate'])*100:.1f}\\%"
+        lines.append(
+            f"{env} & {int(r['corr_N'])} & {skip_pct} & "
+            f"{fmt(r['corr_expert_reward_mean'])} & "
+            f"{fmt(r['corr_expert_rl_sum_mean'])} & "
+            f"{fmt(r['corr_original_rl_sum_mean'])} & "
+            f"${fmt(r['corr_improvement_mean'])} \\pm {fmt(r['corr_improvement_std'])}$ & "
+            f"$[{fmt(r['corr_improvement_min'])},\\, {fmt(r['corr_improvement_max'])}]$ & "
+            f"{fmt(r['corr_expert_disc_reward_mean'])} \\\\"
+        )
+    lines += [r"\bottomrule", r"\end{tabular}}", r"\end{table}"]
+    save_tex(lines, path)
+
+
+def fig_corr_improvement(df, out_dir):
+    """Bar chart: improvement (expert - original rl_sum) per env."""
+    if "corr_improvement_mean" not in df.columns:
+        return
+    df_c = df.dropna(subset=["corr_improvement_mean"])
+    if df_c.empty:
+        return
+
+    envs = df_c["env_short"].tolist()
+    x    = np.arange(len(envs))
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.bar(x, df_c["corr_improvement_mean"], yerr=df_c["corr_improvement_std"],
+           capsize=5, color=COLORS[4], alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(envs, rotation=15, ha="right")
+    ax.set_ylabel(r"$\widehat{A}^*(\text{expert}) - \widehat{A}^*(\text{original})$")
+    ax.set_title("Corrective Feedback: Improvement over Original Trajectory")
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, "figures", "corr_improvement.pdf"))
+
+
+def fig_corr_vs_demo_adv(df, out_dir):
+    """Side-by-side: demo expert rl_sum vs corrective expert rl_sum per env."""
+    has_demo = "demo_rl_sum_pos0_mean" in df.columns
+    has_corr = "corr_expert_rl_sum_mean" in df.columns
+    if not (has_demo and has_corr):
+        return
+    df_c = df.dropna(subset=["demo_rl_sum_pos0_mean", "corr_expert_rl_sum_mean"])
+    if df_c.empty:
+        return
+
+    envs  = df_c["env_short"].tolist()
+    x     = np.arange(len(envs))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(x - width/2, df_c["demo_rl_sum_pos0_mean"],   width,
+           yerr=df_c["demo_rl_sum_pos0_std"],   capsize=4,
+           color=COLORS[0], label="Demo expert $\\widehat{A}^*$",  alpha=0.85)
+    ax.bar(x + width/2, df_c["corr_expert_rl_sum_mean"], width,
+           yerr=df_c["corr_expert_rl_sum_std"], capsize=4,
+           color=COLORS[2], label="Corr expert $\\widehat{A}^*$", alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(envs, rotation=15, ha="right")
+    ax.set_ylabel(r"Mean $\widehat{A}^*$ (rl\_sum) of expert trajectory")
+    ax.set_title("Expert Trajectory Quality: Demonstrative vs Corrective")
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    savefig(fig, os.path.join(out_dir, "figures", "corr_vs_demo_adv.pdf"))
+
+
 def fig_reward_gradient(df, out_dir):
     """Undiscounted reward per position: demo, mid, worst."""
     K       = int(df["demo_K"].iloc[0])
@@ -323,6 +422,7 @@ def main():
     latex_pool_table(df,              os.path.join(tab_dir, "pool_stats.tex"))
     latex_demo_table(df,              os.path.join(tab_dir, "demo_stats.tex"))
     latex_quality_gradient_table(df,  os.path.join(tab_dir, "quality_gradient.tex"))
+    latex_corr_table(df,              os.path.join(tab_dir, "corr_stats.tex"))
 
     # Figures
     print("\nGenerating figures...")
@@ -331,6 +431,8 @@ def main():
     fig_adv_gap(df,           fig_dir)
     fig_action_diversity(df,  fig_dir)
     fig_reward_gradient(df,   fig_dir)
+    fig_corr_improvement(df,  fig_dir)
+    fig_corr_vs_demo_adv(df,  fig_dir)
 
     print("\nDone.")
 

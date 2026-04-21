@@ -1,5 +1,5 @@
 import itertools
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Optional
 
 import torch
 
@@ -225,22 +225,57 @@ class DemoCPL(CPL):
         logit_k = bias · adv_k     for k≥1  (counterfactuals, downweighted)
         L_demo  = -log softmax(logits)[0]
 
-    BC pretraining (optional):
-        For step < bc_steps, trains with pure BC loss on demo trajectories
-        (index 0 only):  L_bc = -mean Σ_t log π(a_t^0 | s_t^0)
-        After bc_steps:  L = L_demo + bc_coeff * L_bc
+    BC pretraining (bc_steps > 0):
+        For step < bc_steps, trains with pure BC loss.
+        If bc_pool_path is set, BC batches are drawn from bc_pool.npz (top-X%
+        pool segments by oracle rl_sum) — a fixed, high-quality dataset shared
+        across all feedback types for a fair comparison.
+        If bc_pool_path is None, falls back to BC on feedback index 0.
+        After bc_steps: L = L_feedback + bc_coeff * L_bc
 
     Args:
-        contrastive_bias : downweight for counterfactual logits (default 0.5)
-                           1.0 = unbiased standard cross-entropy
-        bc_steps         : steps of BC pretraining on demo trajectories (default 0)
-        bc_coeff         : weight of BC regularization after pretraining (default 0.0)
+        contrastive_bias   : downweight for counterfactual logits (default 0.5)
+                             1.0 = unbiased standard cross-entropy
+        bc_steps           : steps of BC pretraining (default 0)
+        bc_coeff           : weight of BC regularization after pretraining (default 0.0)
+        bc_pool_path       : path to bc_pool.npz from score_pool_for_bc.py (default None)
+        bc_pool_batch_size : batch size for bc_pool dataloader (default 64)
     """
 
     def __init__(self, *args, contrastive_bias: float = 0.5, bc_steps: int = 0,
-                 bc_coeff: float = 0.0, **kwargs):
+                 bc_coeff: float = 0.0, bc_pool_path: Optional[str] = None,
+                 bc_pool_batch_size: int = 64, **kwargs):
         super().__init__(*args, contrastive_bias=contrastive_bias,
                          bc_steps=bc_steps, bc_coeff=bc_coeff, **kwargs)
+        self._bc_pool_path = bc_pool_path
+        self._bc_pool_batch_size = bc_pool_batch_size
+        self._bc_loader = None
+        self._bc_iter = None
+
+    def setup_datasets(self, env, total_steps: int) -> None:
+        """Create the feedback dataset plus an optional BC pool dataloader."""
+        super().setup_datasets(env, total_steps)
+        if self._bc_pool_path is not None and self.bc_steps > 0:
+            from research.datasets.bc_buffer import BCBuffer
+            bc_dataset = BCBuffer(
+                self.observation_space,
+                self.action_space,
+                path=self._bc_pool_path,
+                batch_size=self._bc_pool_batch_size,
+            )
+            self._bc_loader = torch.utils.data.DataLoader(bc_dataset, num_workers=0)
+            print(f"[DemoCPL] BC pool loaded: {self._bc_pool_path} "
+                  f"({len(bc_dataset):,} segments, batch_size={self._bc_pool_batch_size})")
+
+    def _next_bc_batch(self) -> Dict:
+        """Draw the next batch from the BC pool, resetting the iterator when exhausted."""
+        if self._bc_iter is None:
+            self._bc_iter = iter(self._bc_loader)
+        try:
+            return next(self._bc_iter)
+        except StopIteration:
+            self._bc_iter = iter(self._bc_loader)
+            return next(self._bc_iter)
 
     def _get_demo_loss(self, batch):
         """
@@ -280,14 +315,27 @@ class DemoCPL(CPL):
         return demo_loss, bc_loss, accuracy
 
     def train_step(self, batch: Dict, step: int, total_steps: int) -> Dict:
-        demo_loss, bc_loss, accuracy = self._get_demo_loss(batch)
-
         if step < self.bc_steps:
-            # Pure BC pretraining on demo trajectories
-            loss = bc_loss
+            # BC warmup phase
+            if self._bc_loader is not None:
+                # Draw from the shared bc_pool (flat segments, no K axis)
+                bc_batch = self._next_bc_batch()
+                bc_batch = self.format_batch(bc_batch)          # to device
+                obs_enc = self.network.encoder(bc_batch["obs"])  # (B, T, D)
+                dist    = self.network.actor(obs_enc)
+                if isinstance(dist, torch.distributions.Distribution):
+                    lp = dist.log_prob(bc_batch["action"])
+                else:
+                    lp = -torch.square(dist - bc_batch["action"]).sum(dim=-1)
+                bc_loss = -lp.mean()
+            else:
+                # Fallback: BC on feedback index 0 (original behaviour)
+                _, bc_loss, _ = self._get_demo_loss(batch)
+            loss     = bc_loss
             demo_loss = torch.tensor(0.0)
             accuracy  = torch.tensor(0.0)
         else:
+            demo_loss, bc_loss, accuracy = self._get_demo_loss(batch)
             loss = demo_loss + self.bc_coeff * bc_loss
 
         self.optim["actor"].zero_grad()

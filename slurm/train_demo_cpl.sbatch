@@ -67,4 +67,6 @@ echo "=============================="
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$(dirname "$RUN_PATH")"
 
+export WANDB_PROJECT="cpl-demo"
+
 python3 "${REPO_ROOT}/scripts/train.py" --config "$CONFIG_PATH" --path "$RUN_PATH"

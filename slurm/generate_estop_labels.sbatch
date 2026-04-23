@@ -19,6 +19,8 @@
 #          --cpus-per-task=2 \
 #          --mem=32G \
 #          --gres=gpu:1 \
+#          --account=<account> \
+#          --partition=<partition> \
 #          slurm/generate_estop_labels.sbatch
 #
 # Optional overrides (set before sbatch or via --export):

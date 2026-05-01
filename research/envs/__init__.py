@@ -18,6 +18,21 @@ except ImportError:
     print("[research] Warning: Could not import MetaWorld Environments.")
 
 try:
+    # Random init, shaped reward (step_cost=0.01) — used for SAC oracle training.
+    register(id="pm_navigation-v0", entry_point="research.envs.pointmass:PointMassGymEnv", kwargs={})
+    # Fixed init at (0,0) — training distribution.
+    register(id="pm_navigation_train-v0", entry_point="research.envs.pointmass:PointMassGymEnv",
+             kwargs={"init_pos": [0.0, 0.0]})
+    # Fixed init at (0.99,0.99) — test distribution (distribution-shift evaluation).
+    register(id="pm_navigation_test-v0", entry_point="research.envs.pointmass:PointMassGymEnv",
+             kwargs={"init_pos": [0.99, 0.99]})
+    # Sparse reward variants (no step cost) — for preference labeling oracle.
+    register(id="pm_navigation_sparse-v0", entry_point="research.envs.pointmass:PointMassGymEnv",
+             kwargs={"step_cost": 0.0})
+except Exception:
+    print("[research] Warning: Could not register PointMass environments.")
+
+try:
     register(
         id="LunarLanderContinuous-cpl-v0",
         entry_point="research.envs.lunar_lander:LunarLanderEnv",

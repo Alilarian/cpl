@@ -1,0 +1,86 @@
+# CPL training on PointMass with pairwise preference feedback.
+#
+# Uses PointMassCPL which saves a policy vector-field snapshot at every
+# eval step (runs/pm_cpl_pref/frames/policy_<step>.png).
+#
+# Run
+# ---
+#   python scripts/train.py \
+#       -c configs/pm_navigation/cpl_pref.yaml \
+#       -p runs/pm_cpl_pref
+#
+# With VI overlay (set advantage_npz in alg_kwargs below):
+#   python scripts/train.py \
+#       -c configs/pm_navigation/cpl_pref.yaml \
+#       -p runs/pm_cpl_pref
+#
+# After training, stitch frames into a GIF:
+#   python scripts/make_policy_gif.py --frames runs/pm_cpl_pref/frames \
+#       --out runs/pm_cpl_pref/policy_evolution.gif
+
+alg: PointMassCPL
+alg_kwargs:
+  alpha: 1.0                   # log-prob scaling (α)
+  contrastive_bias: 0.5        # downweight counterfactuals (0 < bias ≤ 1)
+  bc_coeff: 0.0
+  bc_data: all
+  bc_steps: 0                  # no BC warmup
+  # Path to advantage_vi_*.npz for V*(s) overlay in vector-field snapshots.
+  # Set to null to skip the overlay (snapshots still saved).
+  advantage_npz: runs/pm_sac_oracle/advantage_vi_N100.npz
+  vis_grid_n: 30               # quiver grid resolution (30 → 900 arrows)
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+
+network: ActorPolicy
+network_kwargs:
+  # ContinuousMLPActor: deterministic, returns tanh-squashed mean action.
+  # log_prob proxy = -MSE, consistent with how MetaWorld CPL runs.
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    output_act: ["import", "torch.nn", "Tanh"]
+    hidden_layers: [256, 256]
+    ortho_init: True
+  hidden_layers: [256, 256]
+  ortho_init: True
+
+# eval_env used by the Trainer for rollout evaluation.
+# PointMassGymEnv is registered as pm_navigation-v0 in research/envs/__init__.py.
+eval_env: pm_navigation-v0
+eval_env_kwargs:
+  step_cost: 0.01
+
+# PMFeedbackBuffer reads our (N, 2, T, obs_dim) format directly.
+dataset: PMFeedbackBuffer
+dataset_kwargs:
+  path: datasets/pm/pref_labels.npz
+  batch_size: 64
+  capacity: null               # null = use all pairs
+
+processor: null
+
+checkpoint: null
+
+schedule:
+  actor: linear_warmup
+schedule_kwargs:
+  actor:
+    total_steps: 10000
+    multiplier: 1.0
+
+trainer_kwargs:
+  total_steps: 100000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000              # vector-field snapshot saved every eval step
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 20
+  loss_metric: reward          # save best checkpoint by episode reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: 42

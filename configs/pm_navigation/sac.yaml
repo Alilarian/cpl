@@ -1,0 +1,78 @@
+alg: SAC
+alg_kwargs:
+  tau: 0.005            # soft target-network update rate
+  init_temperature: 0.1
+  critic_freq: 1
+  actor_freq: 1
+  target_freq: 2
+  # PointMass is pure-numpy; episodes are short (~100-300 steps).
+  # 2000 random steps fills the buffer with a diverse initial batch
+  # without wasting too many training steps on pure exploration.
+  random_steps: 2000
+  bc_steps: 0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+
+network: ActorCriticPolicy
+network_kwargs:
+  # DiagonalGaussianMLPActor with squash_normal=True outputs actions in
+  # [-1,1]² via tanh squashing, which matches the env's [-1,1]² action space.
+  actor_class: DiagonalGaussianMLPActor
+  actor_kwargs:
+    log_std_bounds: [-5, 2]
+    squash_normal: True
+    output_act: null
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2      # double-Q to reduce over-estimation bias
+  # Smaller network than MetaWorld (obs_dim=2 vs 35); [256,256] is sufficient.
+  hidden_layers: [256, 256]
+  ortho_init: true
+
+# Training env uses shaped reward (step_cost=0.01) for dense SAC signal.
+# Random init so the oracle sees the full state space, not just one corner.
+env: pm_navigation-v0
+eval_env: pm_navigation-v0
+
+dataset: ReplayBuffer
+dataset_kwargs:
+  path: null
+  sample_fn: sample_qlearning
+  sample_kwargs:
+    discount: 0.99
+    nstep: 1
+    batch_size: 256
+    sample_by_timesteps: False
+  # 300k capacity comfortably covers 300k training steps with no overflow.
+  capacity: 300000
+  fetch_every: 1000
+  distributed: False
+
+processor: null
+
+trainer_kwargs:
+  total_steps: 300000
+  log_freq: 250
+  profile_freq: 100
+  # PointMass is pure Python/numpy — no MuJoCo physics overhead — so
+  # synchronous env stepping is fast enough and avoids subprocess issues.
+  env_runner: null
+  eval_freq: 5000
+  checkpoint_freq: 10000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 20
+  # Save the best checkpoint by episode reward (not loss) so we get the
+  # most successful oracle policy for preference labeling.
+  loss_metric: reward
+  train_dataloader_kwargs:
+    batch_size: null
+    num_workers: 0
+
+seed: null
+
+# W&B: set WANDB_PROJECT=cpl-pointmass (or any name) before running to
+# group all PointMass runs under a dedicated project.
+# The run name is taken from the --path argument (e.g. "pm_sac_oracle").

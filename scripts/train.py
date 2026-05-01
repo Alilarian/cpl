@@ -6,21 +6,27 @@ from research.utils.config import Config
 
 
 def try_wandb_setup(path, config):
-    wandb_api_key = os.getenv("WANDB_API_KEY")
-    if wandb_api_key is not None and wandb_api_key != "":
-        try:
-            import wandb
-        except ImportError:
-            return
-        project_dir = os.path.dirname(os.path.dirname(__file__))
-        # Allow overriding the W&B project name via WANDB_PROJECT env var
-        project_name = os.getenv("WANDB_PROJECT", os.path.basename(project_dir))
-        wandb.init(
-            project=project_name,
-            name=os.path.basename(path),
-            config=config.flatten(separator="-"),
-            dir=os.path.join(os.path.dirname(project_dir), "wandb"),
-        )
+    try:
+        import wandb
+    except ImportError:
+        return
+
+    # Accept the key from the environment variable (SLURM / CI) or fall back
+    # to whatever wandb already has stored (netrc / wandb login).
+    api_key = os.getenv("WANDB_API_KEY") or wandb.api.api_key
+    if not api_key:
+        return
+
+    project_dir = os.path.dirname(os.path.dirname(__file__))
+    project_name = os.getenv("WANDB_PROJECT", os.path.basename(project_dir))
+    wandb_dir = os.path.join(os.path.dirname(project_dir), "wandb")
+    os.makedirs(wandb_dir, exist_ok=True)
+    wandb.init(
+        project=project_name,
+        name=os.path.basename(path),
+        config=config.flatten(separator="-"),
+        dir=wandb_dir,
+    )
 
 
 if __name__ == "__main__":

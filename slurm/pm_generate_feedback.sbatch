@@ -32,12 +32,12 @@
 #   POOL_NPZ        default: datasets/pm/pool.npz
 #   ADVANTAGE_NPZ   default: runs/pm_sac_oracle/advantage_vi_N100.npz
 #   OUTPUT_DIR      default: datasets/pm
-#   N_PAIRS         default: 5000   (pref / corr)
-#   N_COUNTERFACTUALS default: 4   (demo: K = 1 expert + N_CF + 1 original)
-#   RHO             default: 0.8   (estop / seq_estop)
+#   N_PAIRS         default: 60000   (pref / corr / demo — matches estop pool-driven count)
+#   N_COUNTERFACTUALS default: 4    (demo: K = 1 expert + N_CF + 1 original)
+#   RHO             default: 0.8    (estop / seq_estop)
 #   LAM             default: 2.0
 #   KAPPA           default: 0.3
-#   HORIZON         default: 10    (seq_estop window length h)
+#   HORIZON         default: 4      (seq_estop window h; [h-1, T-h]=[3,46] covers early stops)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -72,12 +72,12 @@ OUTPUT_DIR="${OUTPUT_DIR:-datasets/pm}"
 [[ "$OUTPUT_DIR"    != /* ]] && OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
 
 # Hyperparameters
-N_PAIRS="${N_PAIRS:-5000}"
+N_PAIRS="${N_PAIRS:-60000}"
 N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-4}"
 RHO="${RHO:-0.8}"
 LAM="${LAM:-2.0}"
 KAPPA="${KAPPA:-0.3}"
-HORIZON="${HORIZON:-10}"
+HORIZON="${HORIZON:-4}"
 
 OUTPUT_NPZ="${OUTPUT_DIR}/${FEEDBACK_TYPE}_labels.npz"
 

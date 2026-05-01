@@ -15,7 +15,7 @@
 #
 # Optional overrides (set before sbatch or via --export):
 #   OUTPUT_DIR    default: datasets/pm
-#   N_PER_TIER    default: 500   (6 tiers × 500 = 3000 segments)
+#   N_PER_TIER    default: 10000   (6 tiers × 10000 = 60000 segments)
 #   SEGMENT_LEN   default: 50
 #   SEED          default: 42
 
@@ -34,7 +34,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 OUTPUT_DIR="${OUTPUT_DIR:-datasets/pm}"
-N_PER_TIER="${N_PER_TIER:-500}"
+N_PER_TIER="${N_PER_TIER:-10000}"
 SEGMENT_LEN="${SEGMENT_LEN:-50}"
 SEED="${SEED:-42}"
 

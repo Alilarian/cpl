@@ -40,6 +40,7 @@ eval_env_kwargs:
 dataset: EstopBuffer
 dataset_kwargs:
   path: datasets/pm/estop_labels.npz
+  # Generated with: rho=0.8, lam=2.0, kappa=1.9101 (tuned; p10 of peak-H)
   batch_size: 64
   capacity: null
 

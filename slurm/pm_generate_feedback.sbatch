@@ -36,7 +36,7 @@
 #   N_COUNTERFACTUALS default: 4    (demo: K = 1 expert + N_CF + 1 original)
 #   RHO             default: 0.8    (estop / seq_estop)
 #   LAM             default: 2.0
-#   KAPPA           default: 0.3
+#   KAPPA           default: 1.9101 (tuned; p10 of peak-H with rho=0.8)
 #   HORIZON         default: 4      (seq_estop window h; [h-1, T-h]=[3,46] covers early stops)
 
 #SBATCH --nodes=1
@@ -76,7 +76,7 @@ N_PAIRS="${N_PAIRS:-60000}"
 N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-4}"
 RHO="${RHO:-0.8}"
 LAM="${LAM:-2.0}"
-KAPPA="${KAPPA:-0.3}"
+KAPPA="${KAPPA:-1.9101}"
 HORIZON="${HORIZON:-4}"
 
 OUTPUT_NPZ="${OUTPUT_DIR}/${FEEDBACK_TYPE}_labels.npz"

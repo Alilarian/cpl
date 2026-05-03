@@ -305,6 +305,17 @@ def generate_pref(pool, avi, args, rng):
         print("  ERROR: 0 pairs kept. Lower --min-adv-gap.")
         return
 
+    # Cap: keep highest-gap pairs first
+    if args.n_pairs is not None and n_kept > args.n_pairs:
+        top = np.argsort([-g for g in out_gap])[:args.n_pairs]
+        out_obs  = [out_obs[i]  for i in top]
+        out_act  = [out_act[i]  for i in top]
+        out_rew  = [out_rew[i]  for i in top]
+        out_adv  = [out_adv[i]  for i in top]
+        out_gap  = [out_gap[i]  for i in top]
+        out_ckpt = [out_ckpt[i] for i in top]
+        print(f"  Capped to {args.n_pairs} pairs (highest gap selected)")
+
     obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)
     act_out  = np.stack(out_act,  axis=0).astype(np.float32)
     rew_out  = np.stack(out_rew,  axis=0).astype(np.float32)
@@ -379,6 +390,10 @@ def generate_corr(pool, avi, env, args, rng):
 
         if (i + 1) % 500 == 0 or i == N - 1:
             print(f"  [{i+1:>5}/{N}]  kept={n_kept}  dropped={n_dropped}")
+
+        if args.n_pairs is not None and n_kept >= args.n_pairs:
+            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
+            break
 
     print(f"  Pairs kept={n_kept}  dropped={n_dropped}")
     if n_kept == 0:
@@ -483,6 +498,10 @@ def generate_demo(pool, avi, env, args, rng):
 
         if (i + 1) % 500 == 0 or i == N - 1:
             print(f"  [{i+1:>5}/{N}]  kept={n_kept}  dropped={n_dropped}")
+
+        if args.n_pairs is not None and n_kept >= args.n_pairs:
+            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
+            break
 
     print(f"  Pairs kept={n_kept}  dropped={n_dropped}")
     if n_kept == 0:
@@ -634,6 +653,10 @@ def generate_estop(pool, avi, args, rng):
         if (i + 1) % 1000 == 0 or i == N - 1:
             print(f"  [{i+1:>5}/{N}]  stopped={n_stopped}  censored={n_censored}")
 
+        if args.n_pairs is not None and n_stopped >= args.n_pairs:
+            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
+            break
+
     M = len(out_obs)
     if M == 0:
         print("\nERROR: 0 pairs generated. Lower κ so more trajectories are stopped.")
@@ -765,9 +788,22 @@ def generate_seq_estop(pool, avi, args, rng):
             all_traj_idx.append(i)
             all_ckpt.append(int(ckpt[i]))
 
+        if args.n_pairs is not None and len(all_obs) >= args.n_pairs:
+            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
+            break
+
         if (i + 1) % 1000 == 0 or i == N - 1:
             print(f"  [{i+1:>5}/{N}]  stopped={n_stopped}  censored={n_censored}"
                   f"  pairs_so_far={len(all_obs)}")
+
+    if args.n_pairs is not None and len(all_obs) > args.n_pairs:
+        all_obs        = all_obs[:args.n_pairs]
+        all_act        = all_act[:args.n_pairs]
+        all_rew        = all_rew[:args.n_pairs]
+        all_stop_event = all_stop_event[:args.n_pairs]
+        all_timestep   = all_timestep[:args.n_pairs]
+        all_traj_idx   = all_traj_idx[:args.n_pairs]
+        all_ckpt       = all_ckpt[:args.n_pairs]
 
     M = len(all_obs)
     if M == 0:
@@ -878,6 +914,17 @@ def main():
     parser.add_argument("--out",           type=str, required=True,
                         help="Output .npz path")
 
+    # Output size cap
+    parser.add_argument("--n-pairs", type=int, default=None,
+                        help="Max feedback pairs/sets to save (default: all). "
+                             "pref keeps highest-gap pairs; corr/demo/estop/seq_estop "
+                             "stop early once the count is reached.")
+    parser.add_argument("--skip-expert", action="store_true", default=False,
+                        help="Remove tier-0 (expert, checkpoint_step==0) segments "
+                             "from the pool before generating feedback. Recommended "
+                             "for corr/estop/seq_estop so the expert rollout provides "
+                             "real correction signal over sub-optimal pool segments.")
+
     # Common scoring
     parser.add_argument("--gamma",        type=float, default=0.99)
     parser.add_argument("--min-adv-gap",  type=float, default=0.0,
@@ -912,6 +959,8 @@ def main():
     print(f"  Output       : {args.out}")
     print(f"  γ            : {args.gamma}")
     print(f"  Seed         : {args.seed}")
+    if args.n_pairs is not None:
+        print(f"  n_pairs      : {args.n_pairs}  (cap)")
     if args.type in ("estop", "seq_estop"):
         print(f"  ρ={args.rho}  λ={args.lam}  κ={args.kappa}")
     if args.type == "seq_estop":
@@ -924,6 +973,20 @@ def main():
         pool = dict(np.load(f))
     N, T = pool["obs"].shape[:2]
     print(f"  {N} trajectories  T={T}  obs_dim={pool['obs'].shape[2]}")
+
+    # Optionally drop expert tier (tier 0 = checkpoint_step == 0)
+    if args.skip_expert:
+        mask = pool["checkpoint_step"] != 0
+        n_before = N
+        pool = {k: v[mask] for k, v in pool.items()}
+        N = pool["obs"].shape[0]
+        n_dropped = n_before - N
+        print(f"  --skip-expert: removed {n_dropped} tier-0 segments → {N} remaining")
+
+    # Shuffle so --n-pairs samples uniformly across quality tiers
+    idx = rng.permutation(N)
+    pool = {k: v[idx] for k, v in pool.items()}
+    print(f"  Pool shuffled (seed={args.seed})")
 
     # Load VI advantage table
     print(f"\nLoading advantage table …")

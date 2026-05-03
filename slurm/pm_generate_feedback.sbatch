@@ -32,7 +32,7 @@
 #   POOL_NPZ        default: datasets/pm/pool.npz
 #   ADVANTAGE_NPZ   default: runs/pm_sac_oracle/advantage_vi_N100.npz
 #   OUTPUT_DIR      default: datasets/pm
-#   N_PAIRS         default: 60000   (pref / corr / demo — matches estop pool-driven count)
+#   N_PAIRS         default: 60000   (all types; estop/seq_estop stop early once reached)
 #   N_COUNTERFACTUALS default: 4    (demo: K = 1 expert + N_CF + 1 original)
 #   RHO             default: 0.8    (estop / seq_estop)
 #   LAM             default: 2.0
@@ -109,19 +109,19 @@ mkdir -p "$OUTPUT_DIR"
 EXTRA_ARGS=()
 case "$FEEDBACK_TYPE" in
     pref)
-        EXTRA_ARGS=(--n-pairs "$N_PAIRS")
+        EXTRA_ARGS=(--n-pairs "$N_PAIRS" --skip-expert)
         ;;
     corr)
-        EXTRA_ARGS=(--n-pairs "$N_PAIRS")
+        EXTRA_ARGS=(--n-pairs "$N_PAIRS" --skip-expert)
         ;;
     demo)
-        EXTRA_ARGS=(--n-pairs "$N_PAIRS" --n-counterfactuals "$N_COUNTERFACTUALS")
+        EXTRA_ARGS=(--n-pairs "$N_PAIRS" --n-counterfactuals "$N_COUNTERFACTUALS" --skip-expert)
         ;;
     estop)
-        EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA")
+        EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --n-pairs "$N_PAIRS" --skip-expert)
         ;;
     seq_estop)
-        EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --horizon "$HORIZON")
+        EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --horizon "$HORIZON" --n-pairs "$N_PAIRS" --skip-expert)
         ;;
 esac
 

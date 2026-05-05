@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generate PointMass feedback labels for all 5 feedback types (array job).
+# Generate PointMass feedback labels for all 6 feedback types (array job).
 #
 # Each array task generates one feedback type:
 #   1 = pref       (pairwise preference)
@@ -7,6 +7,7 @@
 #   3 = demo       (demonstrative, K-way)
 #   4 = estop      (non-sequential e-stop)
 #   5 = seq_estop  (sequential e-stop)
+#   6 = scalar     (sliding-window scalar → local pairwise preferences)
 #
 # Depends on:
 #   - datasets/pm/pool.npz          from pm_generate_pool.sbatch
@@ -15,11 +16,11 @@
 # Pipeline order on CHPC:
 #   1. sbatch slurm/pm_generate_pool.sbatch
 #   2. sbatch slurm/pm_compute_vi.sbatch
-#   3. sbatch --array=1-5 slurm/pm_generate_feedback.sbatch   (this script)
-#   4. sbatch --array=1-5 slurm/pm_train_cpl.sbatch
+#   3. sbatch --array=1-6 slurm/pm_generate_feedback.sbatch   (this script)
+#   4. sbatch --array=1-6 slurm/pm_train_cpl.sbatch
 #
 # Usage:
-#   sbatch --array=1-5 \
+#   sbatch --array=1-6 \
 #          --job-name=pm_feedback \
 #          --time=1:00:00 \
 #          --cpus-per-task=2 \
@@ -38,6 +39,10 @@
 #   LAM             default: 2.0
 #   KAPPA           default: 1.9101 (tuned; p10 of peak-H with rho=0.8)
 #   HORIZON         default: 4      (seq_estop window h; [h-1, T-h]=[3,46] covers early stops)
+#   SEGMENT_LEN     default: 8      (scalar: steps per scalar feedback segment)
+#   WINDOW_SIZE     default: 10     (scalar: sliding window width)
+#   NOISE_STD       default: 0.1    (scalar: Gaussian noise std on oracle scalar)
+#   SCALAR_DELTA    default: 0.0    (scalar: indifference threshold δ)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -59,7 +64,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # Map task ID → feedback type
-TYPES=(pref corr demo estop seq_estop)
+TYPES=(pref corr demo estop seq_estop scalar)
 FEEDBACK_TYPE="${TYPES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
 # Paths
@@ -78,6 +83,10 @@ RHO="${RHO:-0.8}"
 LAM="${LAM:-2.0}"
 KAPPA="${KAPPA:-1.9101}"
 HORIZON="${HORIZON:-4}"
+SEGMENT_LEN="${SEGMENT_LEN:-8}"
+WINDOW_SIZE="${WINDOW_SIZE:-10}"
+NOISE_STD="${NOISE_STD:-0.1}"
+SCALAR_DELTA="${SCALAR_DELTA:-0.0}"
 
 OUTPUT_NPZ="${OUTPUT_DIR}/${FEEDBACK_TYPE}_labels.npz"
 
@@ -122,6 +131,11 @@ case "$FEEDBACK_TYPE" in
         ;;
     seq_estop)
         EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --horizon "$HORIZON" --n-pairs "$N_PAIRS" --skip-expert)
+        ;;
+    scalar)
+        EXTRA_ARGS=(--segment-len "$SEGMENT_LEN" --window-size "$WINDOW_SIZE" \
+                    --noise-std "$NOISE_STD" --scalar-delta "$SCALAR_DELTA" \
+                    --n-pairs "$N_PAIRS" --skip-expert)
         ;;
 esac
 

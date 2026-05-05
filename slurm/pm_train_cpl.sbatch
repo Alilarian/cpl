@@ -1,12 +1,13 @@
 #!/bin/bash
-# Train CPL on PointMass for all 5 feedback types (array job).
+# Train CPL on PointMass for all 6 feedback types (array job).
 #
 # Each array task trains one feedback type with its dedicated WandB project:
 #   1 = pref       → WANDB_PROJECT=pm-cpl-pref
 #   2 = corr       → WANDB_PROJECT=pm-cpl-corr
 #   3 = demo       → WANDB_PROJECT=pm-cpl-demo
 #   4 = estop      → WANDB_PROJECT=pm-cpl-estop
-#   5 = seq_estop  → WANDB_PROJECT=pm-cpl-seq-estop
+#   5 = seq_estop  → WANDB_PROJECT=pm-cpl-seq_estop
+#   6 = scalar     → WANDB_PROJECT=pm-cpl-scalar
 #
 # No BC warmup (bc_steps=0 in all configs).
 #
@@ -18,11 +19,11 @@
 # Pipeline order on CHPC:
 #   1. sbatch slurm/pm_generate_pool.sbatch
 #   2. sbatch slurm/pm_compute_vi.sbatch
-#   3. sbatch --array=1-5 slurm/pm_generate_feedback.sbatch
-#   4. sbatch --array=1-5 slurm/pm_train_cpl.sbatch          (this script)
+#   3. sbatch --array=1-6 slurm/pm_generate_feedback.sbatch
+#   4. sbatch --array=1-6 slurm/pm_train_cpl.sbatch          (this script)
 #
 # Usage:
-#   sbatch --array=1-5 \
+#   sbatch --array=1-6 \
 #          --job-name=pm_train_cpl \
 #          --time=4:00:00 \
 #          --cpus-per-task=4 \
@@ -56,7 +57,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # Map task ID → feedback type
-TYPES=(pref corr demo estop seq_estop)
+TYPES=(pref corr demo estop seq_estop scalar)
 FEEDBACK_TYPE="${TYPES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
 RUNS_DIR="${RUNS_DIR:-runs}"

@@ -11,6 +11,9 @@ Feedback types  (--type)
   demo       Demonstrative      — K-way counterfactuals sorted by rl_sum
   estop      E-stop             — halt prefix preferred over full trajectory
   seq_estop  Sequential e-stop  — h-step window pairs around stop time τ
+  scalar     Scalar feedback    — sliding window over consecutive segments;
+                                  oracle rl_sum (h=8 steps) normalized to
+                                  [-1,1] + Gaussian noise → local pairwise prefs
 
 Scoring metric (same as MetaWorld generate_*_labels.py)
 --------------------------------------------------------
@@ -33,6 +36,10 @@ Output schemas (identical to MetaWorld equivalents)
   seq_estop   :  obs (M,2,h,2)  action (M,2,h,2)  reward (M,2,h)
                  stop_event (M,)  timestep (M,)  traj_idx (M,)
                  checkpoint_step (M,)
+  scalar      :  obs (M,2,segment_len,2)  action (M,2,segment_len,2)
+                 reward (M,2,segment_len)  adv_scores (M,2)
+                 checkpoint_step (M,2)
+                 Same layout as pref — PMFeedbackBuffer loads it directly.
 
 Usage
 -----
@@ -64,7 +71,7 @@ python scripts/generate_pm_feedback.py \\
     --pool datasets/pm/pool.npz \\
     --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
     --out datasets/pm/estop_labels.npz \\
-    --rho 0.8 --lam 2.0 --kappa 0.3
+    --rho 0.8 --lam 2.0 --kappa 1.9101
 
 # Sequential e-stop
 python scripts/generate_pm_feedback.py \\
@@ -72,7 +79,15 @@ python scripts/generate_pm_feedback.py \\
     --pool datasets/pm/pool.npz \\
     --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
     --out datasets/pm/seq_estop_labels.npz \\
-    --rho 0.8 --lam 2.0 --kappa 0.3 --horizon 10
+    --rho 0.8 --lam 2.0 --kappa 1.9101 --horizon 4
+
+# Scalar feedback
+python scripts/generate_pm_feedback.py \\
+    --type scalar \\
+    --pool datasets/pm/pool.npz \\
+    --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
+    --out datasets/pm/scalar_labels.npz \\
+    --segment-len 8 --window-size 10 --noise-std 0.1 --scalar-delta 0.1
 """
 
 import argparse
@@ -897,6 +912,197 @@ def generate_seq_estop(pool, avi, args, rng):
 
 
 # ---------------------------------------------------------------------------
+# Feedback type: scalar (local pairwise preferences from scalar signals)
+# ---------------------------------------------------------------------------
+
+def generate_scalar(pool, avi, args, rng):
+    """
+    Sliding-window scalar feedback → local pairwise preferences.
+
+    Each pool segment is truncated to segment_len steps and assigned an oracle
+    scalar score (rl_sum normalized to [-1,1]) plus Gaussian noise to simulate
+    a human evaluator.  A sliding window of window_size consecutive segments
+    defines one evaluation batch; within each window every pair (A, B) with
+    f_A > f_B + scalar_delta is extracted as a preference.
+
+    Output schema matches pref labels so PMFeedbackBuffer loads it directly.
+    adv_scores stores [f_preferred, f_non_preferred] (noisy scalar values).
+    """
+    obs    = pool["obs"]              # (N, T, obs_dim)
+    action = pool["action"]           # (N, T, act_dim)
+    reward = pool["reward"]           # (N, T)
+    ckpt   = pool["checkpoint_step"]  # (N,)
+    N, T   = obs.shape[:2]
+    h      = args.segment_len         # steps per scalar segment
+    W      = args.window_size         # sliding window width
+
+    if h > T:
+        raise ValueError(f"--segment-len {h} exceeds pool trajectory length T={T}")
+    if W > N:
+        raise ValueError(f"--window-size {W} exceeds pool size N={N}")
+
+    # Truncate each pool trajectory to h steps
+    seg_obs = obs[:, :h]      # (N, h, obs_dim)
+    seg_act = action[:, :h]   # (N, h, act_dim)
+    seg_rew = reward[:, :h]   # (N, h)
+
+    # Oracle quality: rl_sum over h steps (same metric as all other feedback types)
+    oracle_scores = score_rl_sum(avi, seg_obs, seg_rew)   # (N,)
+    print(f"\n  Oracle rl_sum (h={h}): mean={oracle_scores.mean():.3f}  "
+          f"std={oracle_scores.std():.3f}  "
+          f"p1={np.percentile(oracle_scores,1):.3f}  "
+          f"p99={np.percentile(oracle_scores,99):.3f}")
+
+    # Normalize to [-1, 1] via 1st–99th percentile clipping
+    p1, p99 = np.percentile(oracle_scores, [1, 99])
+    denom = p99 - p1
+    if denom < 1e-8:
+        print("  WARNING: oracle scores nearly constant; scalar values will be ~0.")
+        scalar_oracle = np.zeros(N, dtype=np.float32)
+    else:
+        scalar_oracle = np.clip(
+            (oracle_scores - p1) / denom * 2.0 - 1.0, -1.0, 1.0
+        ).astype(np.float32)
+
+    # Add simulated human noise
+    noise = rng.normal(0.0, args.noise_std, size=N).astype(np.float32)
+    scalar_noisy = np.clip(scalar_oracle + noise, -1.0, 1.0)
+    print(f"  Noisy scalar (noise_std={args.noise_std}): "
+          f"mean={scalar_noisy.mean():.3f}  std={scalar_noisy.std():.3f}")
+
+    # ------------------------------------------------------------------
+    # Sliding window: extract pairs
+    # ------------------------------------------------------------------
+    n_windows = N - W + 1
+    print(f"\nExtracting pairs  (W={W}  δ={args.scalar_delta}  h={h}) …")
+    print(f"  {n_windows} windows  ×  up to {W*(W-1)//2} candidate pairs each")
+
+    out_obs, out_act, out_rew, out_adv, out_ckpt = [], [], [], [], []
+    out_oracle_aligned = []   # True when oracle rl_sum agrees with scalar rank
+    n_candidates = 0
+    n_skipped    = 0
+
+    for i in range(n_windows):
+        win_f = scalar_noisy[i: i + W]   # (W,)
+
+        for a in range(W):
+            for b in range(a + 1, W):    # upper triangle → each pair once
+                fa, fb = float(win_f[a]), float(win_f[b])
+                n_candidates += 1
+
+                diff = fa - fb
+                if abs(diff) < args.scalar_delta:
+                    n_skipped += 1
+                    continue
+
+                # preferred = segment with higher scalar value
+                if diff > 0:
+                    pi, ni = i + a, i + b
+                    f_pref, f_npref = fa, fb
+                else:
+                    pi, ni = i + b, i + a
+                    f_pref, f_npref = fb, fa
+
+                out_obs.append(np.stack([seg_obs[pi], seg_obs[ni]], axis=0))
+                out_act.append(np.stack([seg_act[pi], seg_act[ni]], axis=0))
+                out_rew.append(np.stack([seg_rew[pi], seg_rew[ni]], axis=0))
+                out_adv.append([f_pref, f_npref])
+                out_ckpt.append([int(ckpt[pi]), int(ckpt[ni])])
+                out_oracle_aligned.append(oracle_scores[pi] > oracle_scores[ni])
+
+        if (i + 1) % 5000 == 0 or i == n_windows - 1:
+            print(f"  [{i+1:>6}/{n_windows}]  pairs={len(out_obs)}"
+                  f"  skipped_δ={n_skipped}")
+
+        if args.n_pairs is not None and len(out_obs) >= args.n_pairs:
+            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
+            break
+
+    # Truncate to cap
+    if args.n_pairs is not None and len(out_obs) > args.n_pairs:
+        out_obs            = out_obs[:args.n_pairs]
+        out_act            = out_act[:args.n_pairs]
+        out_rew            = out_rew[:args.n_pairs]
+        out_adv            = out_adv[:args.n_pairs]
+        out_ckpt           = out_ckpt[:args.n_pairs]
+        out_oracle_aligned = out_oracle_aligned[:args.n_pairs]
+
+    M = len(out_obs)
+    if M == 0:
+        print("\nERROR: 0 pairs generated.")
+        print("  Options: lower --scalar-delta, increase --window-size or --noise-std")
+        return
+
+    obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)   # (M, 2, h, obs_dim)
+    act_out  = np.stack(out_act,  axis=0).astype(np.float32)
+    rew_out  = np.stack(out_rew,  axis=0).astype(np.float32)
+    adv_out  = np.array(out_adv,  dtype=np.float32)            # (M, 2) noisy scalars
+    ckpt_out = np.array(out_ckpt, dtype=np.int64)
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+    gaps = adv_out[:, 0] - adv_out[:, 1]         # always > 0
+
+    # Oracle alignment: fraction where rl_sum(preferred) > rl_sum(non-preferred)
+    oracle_aligned = float(np.mean(out_oracle_aligned))
+
+    # Per-window pair count (only windows actually processed)
+    n_windows_processed = min(n_windows, i + 1) if n_windows > 0 else 0
+    avg_pairs_per_win   = M / max(1, n_windows_processed)
+
+    pct = [5, 25, 50, 75, 95]
+
+    print(f"\n{'─'*60}")
+    print(f"Scalar feedback statistics")
+    print(f"{'─'*60}")
+    print(f"  Pool segments    : {N}  (h={h} steps each)")
+    print(f"  Windows processed: {n_windows_processed} / {n_windows}  (W={W})")
+
+    print(f"\n  Oracle rl_sum (h={h} steps, before normalization):")
+    print(f"    mean={oracle_scores.mean():.3f}  std={oracle_scores.std():.3f}  "
+          f"p1={np.percentile(oracle_scores,1):.3f}  "
+          f"p99={np.percentile(oracle_scores,99):.3f}")
+
+    print(f"\n  Normalized scalar oracle ([-1,1]):")
+    so_vals = np.percentile(scalar_oracle, pct)
+    print(f"    mean={scalar_oracle.mean():.3f}  std={scalar_oracle.std():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, so_vals))}")
+
+    print(f"\n  Noisy scalar (noise_std={args.noise_std}):")
+    sn_vals = np.percentile(scalar_noisy, pct)
+    print(f"    mean={scalar_noisy.mean():.3f}  std={scalar_noisy.std():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, sn_vals))}")
+
+    print(f"\n  Pair generation:")
+    print(f"    Total candidates : {n_candidates}")
+    print(f"    Skipped (|Δf|<{args.scalar_delta}): {n_skipped}"
+          f"  ({100*n_skipped/max(1,n_candidates):.1f}%)")
+    print(f"    Pairs kept       : {M}"
+          f"  (avg {avg_pairs_per_win:.1f} per window)")
+
+    print(f"\n  Scalar gap Δf (preferred − non-preferred f):")
+    gap_vals = np.percentile(gaps, pct)
+    print(f"    mean={gaps.mean():.3f}  std={gaps.std():.3f}  "
+          f"min={gaps.min():.3f}  max={gaps.max():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gap_vals))}")
+
+    print(f"\n  Oracle alignment (rl_sum agrees with scalar rank):")
+    print(f"    pref rl_sum > non-pref rl_sum : {100*oracle_aligned:.1f}% of pairs")
+    print(f"{'─'*60}")
+
+    save_npz(args.out,
+             obs=obs_out, action=act_out, reward=rew_out,
+             adv_scores=adv_out, checkpoint_step=ckpt_out)
+
+    print(f"\nSaved → {args.out}")
+    print(f"  obs        : {obs_out.shape}"
+          f"  ([0]=preferred, [1]=non-preferred)  h={h}")
+    print(f"  adv_scores : {adv_out.shape}  (noisy scalar values f ∈ [-1,1])")
+    print(f"\nTrain with:  dataset: PMFeedbackBuffer")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -905,7 +1111,7 @@ def main():
         description="Simulate human feedback for PointMass using VI advantage."
     )
     parser.add_argument("--type", required=True,
-                        choices=["pref", "corr", "demo", "estop", "seq_estop"],
+                        choices=["pref", "corr", "demo", "estop", "seq_estop", "scalar"],
                         help="Feedback type to generate")
     parser.add_argument("--pool",          type=str, required=True,
                         help="Path to pool.npz from generate_pm_pool.py")
@@ -947,6 +1153,16 @@ def main():
     parser.add_argument("--horizon", type=int, default=10,
                         help="Window length h for seq-estop pairs (default: 10)")
 
+    # Scalar-feedback specific
+    parser.add_argument("--segment-len",  type=int,   default=8,
+                        help="Steps per scalar feedback segment (default: 8)")
+    parser.add_argument("--window-size",  type=int,   default=10,
+                        help="Sliding window size W (default: 10)")
+    parser.add_argument("--noise-std",    type=float, default=0.1,
+                        help="Std of Gaussian noise added to oracle scalar (default: 0.1)")
+    parser.add_argument("--scalar-delta", type=float, default=0.0,
+                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.0, no filtering)")
+
     parser.add_argument("--seed",    type=int, default=42)
     args = parser.parse_args()
 
@@ -965,6 +1181,11 @@ def main():
         print(f"  ρ={args.rho}  λ={args.lam}  κ={args.kappa}")
     if args.type == "seq_estop":
         print(f"  horizon h    : {args.horizon}")
+    if args.type == "scalar":
+        print(f"  segment_len  : {args.segment_len}")
+        print(f"  window_size  : {args.window_size}")
+        print(f"  noise_std    : {args.noise_std}")
+        print(f"  scalar_delta : {args.scalar_delta}")
     print("=" * 65)
 
     # Load pool
@@ -1006,6 +1227,8 @@ def main():
         generate_estop(pool, avi, args, rng)
     elif args.type == "seq_estop":
         generate_seq_estop(pool, avi, args, rng)
+    elif args.type == "scalar":
+        generate_scalar(pool, avi, args, rng)
 
 
 if __name__ == "__main__":

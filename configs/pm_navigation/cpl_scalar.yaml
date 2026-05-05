@@ -1,0 +1,76 @@
+# CPL training on PointMass with scalar feedback (local pairwise preferences).
+#
+# Algorithm: PointMassCPL  (binary pairwise BCE — identical loss to pref)
+# Dataset:   PMFeedbackBuffer — scalar_labels.npz  (N, 2, h=8, obs_dim)
+#
+# Scalar feedback model (Pref-GUIDE):
+#   Each pool segment is rated with f ∈ [-1,1] (oracle rl_sum + Gaussian noise).
+#   A sliding window of W=10 consecutive segments defines a local evaluation
+#   batch. All pairs (A,B) within the window where f_A > f_B are extracted as
+#   pairwise preferences — segment with higher f is preferred.
+#   Generated with: segment_len=8, window_size=10, noise_std=0.1, delta=0.0
+#
+# Run
+# ---
+#   WANDB_PROJECT=pm-cpl-scalar python scripts/train.py \
+#       -c configs/pm_navigation/cpl_scalar.yaml \
+#       -p runs/pm_cpl_scalar
+
+alg: PointMassCPL
+alg_kwargs:
+  alpha: 1.0
+  bc_coeff: 0.0
+  bc_steps: 0                  # no BC warmup
+  advantage_npz: runs/pm_sac_oracle/advantage_vi_N100.npz
+  vis_grid_n: 30
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+
+network: ActorPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    output_act: ["import", "torch.nn", "Tanh"]
+    hidden_layers: [256, 256]
+    ortho_init: True
+  hidden_layers: [256, 256]
+  ortho_init: True
+
+eval_env: pm_navigation-v0
+eval_env_kwargs:
+  step_cost: 0.01
+
+dataset: PMFeedbackBuffer
+dataset_kwargs:
+  path: datasets/pm/scalar_labels.npz
+  # Segment length h=8; generated with window_size=10, noise_std=0.1, delta=0.0
+  batch_size: 64
+  capacity: null
+
+processor: null
+
+checkpoint: null
+
+schedule:
+  actor: linear_warmup
+schedule_kwargs:
+  actor:
+    total_steps: 10000
+    multiplier: 1.0
+
+trainer_kwargs:
+  total_steps: 100000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 20
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: 42

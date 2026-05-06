@@ -1,13 +1,14 @@
 #!/bin/bash
-# Generate PointMass feedback labels for all 6 feedback types (array job).
+# Generate PointMass feedback labels for all 7 feedback types (array job).
 #
 # Each array task generates one feedback type:
-#   1 = pref       (pairwise preference)
-#   2 = corr       (corrective)
-#   3 = demo       (demonstrative, K-way)
-#   4 = estop      (non-sequential e-stop)
-#   5 = seq_estop  (sequential e-stop)
-#   6 = scalar     (sliding-window scalar → local pairwise preferences)
+#   1 = pref              (pairwise preference)
+#   2 = corr              (corrective)
+#   3 = demo              (demonstrative, K-way)
+#   4 = estop             (non-sequential e-stop)
+#   5 = seq_estop         (sequential e-stop)
+#   6 = scalar            (sliding-window scalar → local pairwise preferences)
+#   7 = credit_assignment (best length-k subsegment selected per trajectory)
 #
 # Depends on:
 #   - datasets/pm/pool.npz          from pm_generate_pool.sbatch
@@ -20,7 +21,7 @@
 #   4. sbatch --array=1-6 slurm/pm_train_cpl.sbatch
 #
 # Usage:
-#   sbatch --array=1-6 \
+#   sbatch --array=1-7 \
 #          --job-name=pm_feedback \
 #          --time=1:00:00 \
 #          --cpus-per-task=2 \
@@ -43,6 +44,7 @@
 #   WINDOW_SIZE     default: 10     (scalar: sliding window width)
 #   NOISE_STD       default: 0.1    (scalar: Gaussian noise std on oracle scalar)
 #   SCALAR_DELTA    default: 0.0    (scalar: indifference threshold δ)
+#   SUBSEGMENT_LEN  default: 12     (credit_assignment: subsegment length k)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -52,7 +54,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "SLURM_ARRAY_TASK_ID is not set. Submit with sbatch --array=1-5 ..."
+    echo "SLURM_ARRAY_TASK_ID is not set. Submit with sbatch --array=1-7 ..."
     exit 1
 fi
 
@@ -64,7 +66,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # Map task ID → feedback type
-TYPES=(pref corr demo estop seq_estop scalar)
+TYPES=(pref corr demo estop seq_estop scalar credit_assignment)
 FEEDBACK_TYPE="${TYPES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
 # Paths
@@ -87,6 +89,7 @@ SEGMENT_LEN="${SEGMENT_LEN:-8}"
 WINDOW_SIZE="${WINDOW_SIZE:-10}"
 NOISE_STD="${NOISE_STD:-0.1}"
 SCALAR_DELTA="${SCALAR_DELTA:-0.0}"
+SUBSEGMENT_LEN="${SUBSEGMENT_LEN:-12}"
 
 OUTPUT_NPZ="${OUTPUT_DIR}/${FEEDBACK_TYPE}_labels.npz"
 
@@ -135,6 +138,10 @@ case "$FEEDBACK_TYPE" in
     scalar)
         EXTRA_ARGS=(--segment-len "$SEGMENT_LEN" --window-size "$WINDOW_SIZE" \
                     --noise-std "$NOISE_STD" --scalar-delta "$SCALAR_DELTA" \
+                    --n-pairs "$N_PAIRS" --skip-expert)
+        ;;
+    credit_assignment)
+        EXTRA_ARGS=(--subsegment-len "$SUBSEGMENT_LEN" \
                     --n-pairs "$N_PAIRS" --skip-expert)
         ;;
 esac

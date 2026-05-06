@@ -1,13 +1,14 @@
 #!/bin/bash
-# Train CPL on PointMass for all 6 feedback types (array job).
+# Train CPL on PointMass for all 7 feedback types (array job).
 #
 # Each array task trains one feedback type with its dedicated WandB project:
-#   1 = pref       → WANDB_PROJECT=pm-cpl-pref
-#   2 = corr       → WANDB_PROJECT=pm-cpl-corr
-#   3 = demo       → WANDB_PROJECT=pm-cpl-demo
-#   4 = estop      → WANDB_PROJECT=pm-cpl-estop
-#   5 = seq_estop  → WANDB_PROJECT=pm-cpl-seq_estop
-#   6 = scalar     → WANDB_PROJECT=pm-cpl-scalar
+#   1 = pref              → WANDB_PROJECT=pm-cpl-pref
+#   2 = corr              → WANDB_PROJECT=pm-cpl-corr
+#   3 = demo              → WANDB_PROJECT=pm-cpl-demo
+#   4 = estop             → WANDB_PROJECT=pm-cpl-estop
+#   5 = seq_estop         → WANDB_PROJECT=pm-cpl-seq_estop
+#   6 = scalar            → WANDB_PROJECT=pm-cpl-scalar
+#   7 = credit_assignment → WANDB_PROJECT=pm-cpl-credit_assignment
 #
 # No BC warmup (bc_steps=0 in all configs).
 #
@@ -45,7 +46,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "SLURM_ARRAY_TASK_ID is not set. Submit with sbatch --array=1-5 ..."
+    echo "SLURM_ARRAY_TASK_ID is not set. Submit with sbatch --array=1-7 ..."
     exit 1
 fi
 
@@ -57,7 +58,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # Map task ID → feedback type
-TYPES=(pref corr demo estop seq_estop scalar)
+TYPES=(pref corr demo estop seq_estop scalar credit_assignment)
 FEEDBACK_TYPE="${TYPES[$((SLURM_ARRAY_TASK_ID - 1))]}"
 
 RUNS_DIR="${RUNS_DIR:-runs}"

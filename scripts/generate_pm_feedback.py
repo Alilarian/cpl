@@ -6,14 +6,17 @@ SAC critic, so no GPU or MuJoCo is needed.
 
 Feedback types  (--type)
 ------------------------
-  pref       Pairwise preference — score pool pairs with rl_sum, keep better
-  corr       Corrective         — pool segment vs expert rollout from same s_0
-  demo       Demonstrative      — K-way counterfactuals sorted by rl_sum
-  estop      E-stop             — halt prefix preferred over full trajectory
-  seq_estop  Sequential e-stop  — h-step window pairs around stop time τ
-  scalar     Scalar feedback    — sliding window over consecutive segments;
-                                  oracle rl_sum (h=8 steps) normalized to
-                                  [-1,1] + Gaussian noise → local pairwise prefs
+  pref              Pairwise preference — score pool pairs with rl_sum, keep better
+  corr              Corrective         — pool segment vs expert rollout from same s_0
+  demo              Demonstrative      — K-way counterfactuals sorted by rl_sum
+  estop             E-stop             — halt prefix preferred over full trajectory
+  seq_estop         Sequential e-stop  — h-step window pairs around stop time τ
+  scalar            Scalar feedback    — sliding window over consecutive segments;
+                                         oracle rl_sum (h=8 steps) normalized to
+                                         [-1,1] + Gaussian noise → local pairwise prefs
+  credit_assignment Credit assignment  — oracle selects best length-k subsegment
+                                         from each reference trajectory (T=64);
+                                         multi-way cross-entropy loss over C candidates
 
 Scoring metric (same as MetaWorld generate_*_labels.py)
 --------------------------------------------------------
@@ -40,6 +43,10 @@ Output schemas (identical to MetaWorld equivalents)
                  reward (M,2,segment_len)  adv_scores (M,2)
                  checkpoint_step (M,2)
                  Same layout as pref — PMFeedbackBuffer loads it directly.
+  credit_assn :  obs (N,C,k,2)  action (N,C,k,2)  adv_scores (N,C)
+                 chosen_idx (N,)  checkpoint_step (N,)
+                 C = T-k+1 candidate windows per trajectory.
+                 PMCreditAssignmentBuffer loads it directly.
 
 Usage
 -----
@@ -88,6 +95,14 @@ python scripts/generate_pm_feedback.py \\
     --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
     --out datasets/pm/scalar_labels.npz \\
     --segment-len 8 --window-size 10 --noise-std 0.1 --scalar-delta 0.1
+
+# Credit assignment
+python scripts/generate_pm_feedback.py \\
+    --type credit_assignment \\
+    --pool datasets/pm/pool.npz \\
+    --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
+    --out datasets/pm/credit_assignment_labels.npz \\
+    --subsegment-len 12
 """
 
 import argparse
@@ -1103,6 +1118,140 @@ def generate_scalar(pool, avi, args, rng):
 
 
 # ---------------------------------------------------------------------------
+# Feedback type: credit assignment (multi-way subsegment selection)
+# ---------------------------------------------------------------------------
+
+def generate_credit_assignment(pool, avi, args, rng):
+    """
+    For each pool trajectory, construct all contiguous windows of length k
+    and select the one with the highest rl_sum advantage as the oracle choice.
+
+    C = T - k + 1 candidate windows per trajectory.
+
+    Output schema (loaded by PMCreditAssignmentBuffer):
+        obs          : (N, C, k, obs_dim)  all candidate windows
+        action       : (N, C, k, act_dim)
+        adv_scores   : (N, C)              rl_sum for every candidate
+        chosen_idx   : (N,)  int32         argmax of adv_scores per trajectory
+        checkpoint_step : (N,)
+    """
+    obs    = pool["obs"]              # (N, T, obs_dim)
+    action = pool["action"]           # (N, T, act_dim)
+    reward = pool["reward"]           # (N, T)
+    ckpt   = pool["checkpoint_step"]  # (N,)
+    N, T   = obs.shape[:2]
+    k      = args.subsegment_len
+    C      = T - k + 1
+
+    if k >= T:
+        raise ValueError(f"--subsegment-len {k} must be < pool trajectory length T={T}")
+    if C < 2:
+        raise ValueError(f"Only {C} window(s) with k={k}, T={T} — need at least 2 candidates.")
+
+    print(f"\nCredit assignment setup:")
+    print(f"  T={T}  k={k}  C={C} candidates per trajectory")
+    print(f"  N={N} pool trajectories → up to {N} CA examples")
+
+    # Build all sliding windows (vectorized)
+    print(f"\nBuilding all {N}×{C} windows …")
+    all_win_obs = np.stack([obs[:, i:i + k] for i in range(C)], axis=1)     # (N, C, k, obs_dim)
+    all_win_act = np.stack([action[:, i:i + k] for i in range(C)], axis=1)  # (N, C, k, act_dim)
+    all_win_rew = np.stack([reward[:, i:i + k] for i in range(C)], axis=1)  # (N, C, k)
+
+    # Score all windows with rl_sum (batch over N*C)
+    print(f"  Scoring {N * C:,} windows with score_rl_sum …")
+    flat_obs    = all_win_obs.reshape(N * C, k, obs.shape[2])
+    flat_rew    = all_win_rew.reshape(N * C, k)
+    flat_scores = score_rl_sum(avi, flat_obs, flat_rew).astype(np.float32)  # (N*C,)
+    win_scores  = flat_scores.reshape(N, C)                                  # (N, C)
+
+    # Oracle: deterministic argmax
+    chosen_idx = np.argmax(win_scores, axis=1).astype(np.int32)  # (N,)
+
+    # Cap to n_pairs (pool already shuffled; just slice)
+    if args.n_pairs is not None and N > args.n_pairs:
+        all_win_obs = all_win_obs[:args.n_pairs]
+        all_win_act = all_win_act[:args.n_pairs]
+        win_scores  = win_scores[:args.n_pairs]
+        chosen_idx  = chosen_idx[:args.n_pairs]
+        ckpt        = ckpt[:args.n_pairs]
+        N = args.n_pairs
+        print(f"  Capped to {args.n_pairs} examples")
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+    chosen_scores     = win_scores[np.arange(N), chosen_idx]   # (N,)
+    mean_scores       = win_scores.mean(axis=1)                  # (N,)
+    min_scores        = win_scores.min(axis=1)                   # (N,)
+    gap_vs_mean       = chosen_scores - mean_scores              # (N,) >= 0
+    gap_vs_min        = chosen_scores - min_scores               # (N,) >= 0
+    all_flat_scores   = win_scores.ravel()
+    pct               = [5, 25, 50, 75, 95]
+
+    print(f"\n{'─'*60}")
+    print(f"Credit assignment statistics")
+    print(f"{'─'*60}")
+    print(f"  Examples         : {N}  (1 per pool trajectory)")
+    print(f"  Candidates / ex  : C={C}  (T={T}, k={k})")
+
+    sv = np.percentile(all_flat_scores, pct)
+    print(f"\n  Window rl_sum (all {N * C:,} windows):")
+    print(f"    mean={all_flat_scores.mean():.3f}  std={all_flat_scores.std():.3f}  "
+          f"min={all_flat_scores.min():.3f}  max={all_flat_scores.max():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, sv))}")
+
+    cv = np.percentile(chosen_scores, pct)
+    print(f"\n  Chosen window rl_sum:")
+    print(f"    mean={chosen_scores.mean():.3f}  std={chosen_scores.std():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, cv))}")
+
+    gm = np.percentile(gap_vs_mean, pct)
+    gi = np.percentile(gap_vs_min,  pct)
+    print(f"\n  Score gap (chosen vs mean / min):")
+    print(f"    vs_mean: mean={gap_vs_mean.mean():.3f}  std={gap_vs_mean.std():.3f}  "
+          f"{'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gm))}")
+    print(f"    vs_min:  mean={gap_vs_min.mean():.3f}   std={gap_vs_min.std():.3f}  "
+          f"{'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gi))}")
+
+    print(f"\n  Chosen window position (0=earliest, {C - 1}=latest in trajectory):")
+    pos_vals = np.percentile(chosen_idx, pct)
+    print(f"    mean={chosen_idx.mean():.1f}  std={chosen_idx.std():.1f}  "
+          f"min={chosen_idx.min()}  max={chosen_idx.max()}")
+    print(f"    {'  '.join(f'p{p}={v:.0f}' for p, v in zip(pct, pos_vals))}")
+    # 5-bucket histogram over window positions
+    bin_edges = np.linspace(0, C, 6).astype(int)
+    cnt_bins  = np.bincount(chosen_idx, minlength=C)
+    bar_w = 25
+    for bi in range(5):
+        lo, hi = bin_edges[bi], bin_edges[bi + 1]
+        cnt  = int(cnt_bins[lo:hi].sum())
+        frac = cnt / N
+        bar  = "█" * int(frac * bar_w)
+        print(f"    pos [{lo:2d}-{hi:2d}] [{bar:<{bar_w}}] {cnt:5d}  ({100 * frac:5.1f}%)")
+    print(f"{'─'*60}")
+
+    obs_out  = all_win_obs.astype(np.float32)   # (N, C, k, obs_dim)
+    act_out  = all_win_act.astype(np.float32)   # (N, C, k, act_dim)
+    adv_out  = win_scores                        # (N, C) float32
+    idx_out  = chosen_idx                        # (N,) int32
+    ckpt_out = ckpt.astype(np.int64)            # (N,)
+
+    save_npz(args.out,
+             obs=obs_out, action=act_out,
+             adv_scores=adv_out, chosen_idx=idx_out,
+             checkpoint_step=ckpt_out)
+
+    print(f"\nSaved → {args.out}")
+    print(f"  obs        : {obs_out.shape}  (N, C, k, obs_dim)")
+    print(f"  action     : {act_out.shape}")
+    print(f"  adv_scores : {adv_out.shape}  rl_sum per candidate window")
+    print(f"  chosen_idx : {idx_out.shape}  oracle-selected window index (argmax)")
+    print(f"\nTrain with:  dataset: PMCreditAssignmentBuffer")
+    print(f"             alg:     PointMassCreditAssignmentCPL")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1111,7 +1260,8 @@ def main():
         description="Simulate human feedback for PointMass using VI advantage."
     )
     parser.add_argument("--type", required=True,
-                        choices=["pref", "corr", "demo", "estop", "seq_estop", "scalar"],
+                        choices=["pref", "corr", "demo", "estop", "seq_estop",
+                                 "scalar", "credit_assignment"],
                         help="Feedback type to generate")
     parser.add_argument("--pool",          type=str, required=True,
                         help="Path to pool.npz from generate_pm_pool.py")
@@ -1163,6 +1313,10 @@ def main():
     parser.add_argument("--scalar-delta", type=float, default=0.0,
                         help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.0, no filtering)")
 
+    # Credit-assignment specific
+    parser.add_argument("--subsegment-len", type=int, default=12,
+                        help="Length k of each candidate subsegment (default: 12)")
+
     parser.add_argument("--seed",    type=int, default=42)
     args = parser.parse_args()
 
@@ -1186,6 +1340,8 @@ def main():
         print(f"  window_size  : {args.window_size}")
         print(f"  noise_std    : {args.noise_std}")
         print(f"  scalar_delta : {args.scalar_delta}")
+    if args.type == "credit_assignment":
+        print(f"  subsegment_len: {args.subsegment_len}")
     print("=" * 65)
 
     # Load pool
@@ -1229,6 +1385,8 @@ def main():
         generate_seq_estop(pool, avi, args, rng)
     elif args.type == "scalar":
         generate_scalar(pool, avi, args, rng)
+    elif args.type == "credit_assignment":
+        generate_credit_assignment(pool, avi, args, rng)
 
 
 if __name__ == "__main__":

@@ -362,6 +362,83 @@ class DemoCPL(CPL):
                     accuracy=accuracy.item())
 
 
+class CreditAssignmentCPL(CPL):
+    """
+    CPL for credit assignment feedback (multi-way cross-entropy over candidate windows).
+
+    Each batch from PMCreditAssignmentBuffer:
+        obs    : (B, C, k, obs_dim)   C candidate windows per reference trajectory
+        action : (B, C, k, act_dim)
+        label  : (B,) long            index of the oracle-selected window
+
+    Loss (ARIC credit assignment):
+        adv_c = α · Σ_t log π(a_t^c | s_t^c)    for each candidate c ∈ 0..C-1
+        L_ca  = -log softmax(adv)[chosen_c]
+              = cross_entropy(adv, chosen_idx)
+
+    BC loss: NLL on the chosen window only.
+    """
+
+    def _get_ca_loss(self, batch):
+        B, C, T, _ = batch["obs"].shape
+
+        obs    = batch["obs"].reshape(B * C, T, -1)     # (B*C, T, obs_dim)
+        action = batch["action"].reshape(B * C, T, -1)  # (B*C, T, act_dim)
+
+        obs_enc = self.network.encoder(obs)
+        dist    = self.network.actor(obs_enc)
+
+        if isinstance(dist, torch.distributions.Distribution):
+            lp = dist.log_prob(action)                   # (B*C, T)
+        else:
+            lp = -torch.square(dist - action).sum(dim=-1)
+
+        lp = lp.reshape(B, C, T)                         # (B, C, T)
+
+        seg_adv  = self.alpha * lp.sum(dim=-1)           # (B, C)
+        chosen   = batch["label"].long()                  # (B,)
+        ca_loss  = F.cross_entropy(seg_adv, chosen)
+
+        # BC: NLL on the oracle-chosen window
+        bc_loss  = -lp[torch.arange(B, device=lp.device), chosen, :].mean()
+
+        with torch.no_grad():
+            accuracy = (seg_adv.argmax(dim=1) == chosen).float().mean()
+
+        return ca_loss, bc_loss, accuracy
+
+    def train_step(self, batch: Dict, step: int, total_steps: int) -> Dict:
+        if step < self.bc_steps:
+            _, bc_loss, _ = self._get_ca_loss(batch)
+            loss     = bc_loss
+            ca_loss  = torch.tensor(0.0)
+            accuracy = torch.tensor(0.0)
+        else:
+            ca_loss, bc_loss, accuracy = self._get_ca_loss(batch)
+            loss = ca_loss + self.bc_coeff * bc_loss
+
+        self.optim["actor"].zero_grad()
+        loss.backward()
+        self.optim["actor"].step()
+
+        if step == self.bc_steps - 1:
+            del self.optim["actor"]
+            params = itertools.chain(self.network.actor.parameters(),
+                                     self.network.encoder.parameters())
+            groups = utils.create_optim_groups(params, self.optim_kwargs)
+            self.optim["actor"] = self.optim_class(groups)
+            self.setup_schedulers(do_nothing=False)
+
+        return dict(ca_loss=ca_loss.item(), bc_loss=bc_loss.item(),
+                    accuracy=accuracy.item())
+
+    def validation_step(self, batch: Any) -> Dict:
+        with torch.no_grad():
+            ca_loss, bc_loss, accuracy = self._get_ca_loss(batch)
+        return dict(ca_loss=ca_loss.item(), bc_loss=bc_loss.item(),
+                    accuracy=accuracy.item())
+
+
 class EstopCPL(DemoCPL):
     """
     CPL variant trained on (non-sequential) E-stop feedback.

@@ -29,7 +29,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from .cpl import CPL, DemoCPL, EstopCPL
+from .cpl import CPL, CreditAssignmentCPL, DemoCPL, EstopCPL
 
 
 # ---------------------------------------------------------------------------
@@ -202,3 +202,7 @@ class PointMassDemoCPL(_PointMassVizMixin, DemoCPL):
 
 class PointMassEstopCPL(_PointMassVizMixin, EstopCPL):
     """CPL for non-sequential e-stop feedback on PointMass. Dataset: EstopBuffer."""
+
+
+class PointMassCreditAssignmentCPL(_PointMassVizMixin, CreditAssignmentCPL):
+    """CPL for credit assignment feedback on PointMass. Dataset: PMCreditAssignmentBuffer."""

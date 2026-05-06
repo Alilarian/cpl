@@ -444,20 +444,20 @@ class EstopCPL(DemoCPL):
     CPL variant trained on (non-sequential) E-stop feedback.
 
     Each training pair (from EstopBuffer) consists of:
-        index 0: halt prefix  σ_{0:τ}  (preferred — oracle stopped at τ)
-        index 1: full trajectory σ_{0:T}  (non-preferred — allowed to continue)
+        index 0: halt prefix  (preferred) — steps 0..τ real, τ+1..T-1 repeat (s_τ,a_τ,r_τ)
+        index 1: full trajectory  (non-preferred)
 
-    Both stored at full length T; the prefix has state/action at τ repeated
-    for steps τ+1..T-1 and reward zeroed after τ.  stop_time τ is used to
-    mask the discounted advantage sum for the prefix.
+    Both stored at full length T.  The loss scores both over all T steps —
+    the repeated tail contributes log π(a_τ|s_τ) for each repeated step
+    with its discount weight, no masking required.
 
     Loss (ARIC E-stop):
-        J_π(σ_{0:t}) = α Σ_{k=0}^{t} γ^k log π(a_k | s_k)
-        L = -log σ(β' (J_π(σ_{0:τ}) − J_π(σ_{0:T})))
+        J_π(σ) = α Σ_{k=0}^{T-1} γ^k log π(a_k | s_k)   (both sides, all T steps)
+        L = -log σ(β' (J_π(prefix) − J_π(full)))
 
     BC pretraining (bc_steps > 0):
         Same logic as DemoCPL: uses bc_pool if bc_pool_path is given, otherwise
-        falls back to BC on the real steps of the halt prefix (k = 0..τ only).
+        falls back to BC on all T steps of the prefix (including repeated tail).
         After bc_steps: L = L_estop + bc_coeff * L_bc.
 
     Args:
@@ -500,23 +500,25 @@ class EstopCPL(DemoCPL):
 
     def _get_estop_loss(self, batch):
         """
-        Compute the E-stop loss and BC loss from an EstopBuffer batch.
+        Compute the E-stop loss from an EstopBuffer batch.
 
-        batch["obs"]       : (B, 2, T, obs_dim)
-        batch["action"]    : (B, 2, T, act_dim)
-        batch["stop_time"] : (B,)  τ per pair
+        batch["obs"]    : (B, 2, T, obs_dim)
+            [0] = halt prefix — steps 0..τ are real, steps τ+1..T-1 repeat (s_τ,a_τ,r_τ)
+            [1] = full trajectory
+        batch["action"] : (B, 2, T, act_dim)
 
-        Returns:
-            estop_loss : scalar  -log σ(β'(J_prefix − J_full))
-            bc_loss    : scalar  mean negative log-prob over real prefix steps
-            accuracy   : fraction of pairs where J_prefix > J_full
+        Both sides are scored over all T steps.  The repeated (s_τ,a_τ) tail
+        contributes log π(a_τ|s_τ) for each repeated step — no masking needed.
+
+        Loss: -log σ(β' (J_prefix − J_full))
+            J = α Σ_{k=0}^{T-1} γ^k log π(a_k | s_k)   (full T-step sum, both sides)
         """
         B, _, T, _ = batch["obs"].shape
 
         obs    = batch["obs"].reshape(B * 2, T, -1)     # (B*2, T, obs_dim)
         action = batch["action"].reshape(B * 2, T, -1)  # (B*2, T, act_dim)
 
-        obs_enc = self.network.encoder(obs)              # (B*2, T, D)
+        obs_enc = self.network.encoder(obs)
         dist    = self.network.actor(obs_enc)
 
         if isinstance(dist, torch.distributions.Distribution):
@@ -529,27 +531,17 @@ class EstopCPL(DemoCPL):
         lp_full   = lp[:, 1]                             # (B, T)
 
         # Discount weights: [1, γ, γ², ..., γ^{T-1}]
-        t_idx     = torch.arange(T, device=lp.device).float()       # (T,)
-        discounts = self.discount ** t_idx                            # (T,)
+        discounts = self.discount ** torch.arange(T, device=lp.device).float()  # (T,)
 
-        # Prefix mask: 1 for k <= τ, 0 otherwise  →  (B, T)
-        stop_time    = batch["stop_time"].long()                      # (B,)
-        prefix_mask  = (t_idx.unsqueeze(0) <= stop_time.unsqueeze(1)).float()
+        # J over all T steps — repeated (s_τ,a_τ) tail sums naturally
+        J_prefix = self.alpha * (discounts * lp_prefix).sum(dim=-1)  # (B,)
+        J_full   = self.alpha * (discounts * lp_full).sum(dim=-1)    # (B,)
 
-        # J_π(σ_{0:τ}) = α Σ_{k=0}^{τ} γ^k lp_k
-        J_prefix = self.alpha * (prefix_mask * discounts * lp_prefix).sum(dim=-1)  # (B,)
-
-        # J_π(σ_{0:T}) = α Σ_{k=0}^{T-1} γ^k lp_k
-        J_full = self.alpha * (discounts * lp_full).sum(dim=-1)      # (B,)
-
-        # L = -log σ(β'(J_prefix − J_full))  [numerically stable via softplus]
         logit      = self.beta_prime * (J_prefix - J_full)
         estop_loss = F.softplus(-logit).mean()
 
-        # BC loss: mean NLL over real prefix steps only (k = 0..τ)
-        n_real  = prefix_mask.sum(dim=-1).clamp(min=1.0)             # (B,)
-        bc_loss = -(prefix_mask * lp_prefix).sum(dim=-1) / n_real
-        bc_loss = bc_loss.mean()
+        # BC: imitate the full padded prefix (all T steps)
+        bc_loss = -lp_prefix.mean()
 
         with torch.no_grad():
             accuracy = (logit > 0).float().mean()

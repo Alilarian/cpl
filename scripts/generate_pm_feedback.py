@@ -191,6 +191,28 @@ def score_rl_sum(avi: AdvantageVI, obs: np.ndarray, reward: np.ndarray) -> np.nd
     return reward[:, :-1].sum(axis=1) + V[:, -1] - V[:, 0]
 
 
+def compute_partial_rl_sum(avi: AdvantageVI, obs: np.ndarray,
+                           reward: np.ndarray) -> np.ndarray:
+    """
+    Partial rl_sum advantage at every timestep t:
+
+        J_t = Σ_{k=0}^{t-1} r_k  +  V*(s_t)  −  V*(s_0)
+
+    J_0 = 0 (no steps taken), J_{T-1} = score_rl_sum for the full trajectory.
+
+    obs    : (N, T, 2)
+    reward : (N, T)
+    returns: (N, T) float64
+    """
+    N, T = obs.shape[:2]
+    V    = vi_values(avi, obs)                                      # (N, T)
+    cum_rew = np.concatenate([
+        np.zeros((N, 1), dtype=np.float64),
+        np.cumsum(reward[:, :-1], axis=1).astype(np.float64),
+    ], axis=1)                                                      # (N, T)
+    return cum_rew + V - V[:, :1]                                   # (N, T)
+
+
 def compute_delta(avi: AdvantageVI, obs: np.ndarray, reward: np.ndarray,
                   gamma: float = 0.99) -> np.ndarray:
     """
@@ -627,9 +649,16 @@ def _reward_comparison_estop(rew_out: np.ndarray, tau_arr: np.ndarray) -> None:
 
 def generate_estop(pool, avi, args, rng):
     """
-    For each pool trajectory, simulate the e-stop process.  Trajectories where
-    the oracle stops produce one pair: halt prefix (preferred) vs full traj.
-    Censored trajectories are discarded.
+    ARIC oracle e-stop: select t* = argmax_t J_t per trajectory, where
+
+        J_t = Σ_{k=0}^{t-1} r_k  +  V*(s_t)  −  V*(s_0)
+
+    The halt prefix is padded to length T by repeating (s_{t*}, a_{t*}, r_{t*})
+    at every step after t*.  Both prefix and full trajectory have length T, so
+    the loss sums all T steps on both sides — no masking needed.
+
+    Pairs where t* = T-1 (monotone trajectory, prefix ≡ full) are dropped.
+    --min-adv-gap filters pairs with J[t*] − J_full below a threshold.
     """
     obs    = pool["obs"]
     action = pool["action"]
@@ -637,79 +666,89 @@ def generate_estop(pool, avi, args, rng):
     ckpt   = pool["checkpoint_step"]
     N, T   = obs.shape[:2]
 
-    print(f"\nComputing per-step Δ_t for {N} trajectories …")
-    delta_all = compute_delta(avi, obs, reward, gamma=args.gamma)     # (N, T)
-    print(f"  Δ_t: mean={delta_all.mean():.4f}  std={delta_all.std():.4f}"
-          f"  p95={np.percentile(delta_all, 95):.4f}")
+    print(f"\nComputing partial rl_sum J_t for {N} trajectories …")
+    J      = compute_partial_rl_sum(avi, obs, reward)    # (N, T) float64
+    J_full = J[:, -1]                                    # (N,)
 
-    h_ss = float(delta_all.mean()) / (1.0 - args.rho)
-    p_ss = 1.0 / (1.0 + np.exp(-args.lam * (h_ss - args.kappa)))
-    print(f"  Steady-state H={h_ss:.4f}  → p_stop≈{p_ss:.3f}  (κ={args.kappa})")
-    if p_ss < 0.05:
-        print("  NOTE: very low stop probability. Lower κ to get more stops.")
-    elif p_ss > 0.95:
-        print("  NOTE: very high stop probability. Raise κ to allow more trajectories.")
+    t_star = np.argmax(J, axis=1).astype(np.int32)      # (N,)
+    gaps   = J[np.arange(N), t_star] - J_full           # (N,) >= 0
 
-    print(f"\nSimulating e-stop (ρ={args.rho} λ={args.lam} κ={args.kappa}) …")
+    print(f"  J_full : mean={J_full.mean():.3f}  std={J_full.std():.3f}")
+    print(f"  t*     : mean={t_star.mean():.1f}  "
+          f"min={t_star.min()}  max={t_star.max()}")
+    print(f"  gap    : mean={gaps.mean():.3f}  "
+          f"frac>0 = {100*(gaps > 0).mean():.1f}%")
 
-    out_obs, out_act, out_rew, out_tau, out_ckpt = [], [], [], [], []
-    n_stopped = n_censored = 0
+    min_gap       = args.min_adv_gap
+    keep          = (t_star < T - 1) & (gaps >= min_gap)
+    idx_keep      = np.where(keep)[0]
+    n_trivial     = int((t_star >= T - 1).sum())
+    n_gap_dropped = int((~keep & (t_star < T - 1)).sum())
 
-    for i in range(N):
-        tau = simulate_estop(delta_all[i], args.rho, args.lam, args.kappa, rng)
+    print(f"  Trivial (t*=T-1) dropped : {n_trivial}")
+    print(f"  Gap-filter dropped       : {n_gap_dropped}  (min_gap={min_gap})")
+    print(f"  Kept                     : {len(idx_keep)}")
 
-        if tau is None:
-            n_censored += 1
-            continue
-
-        n_stopped += 1
-
-        # Halt prefix: repeat state s_τ and zero reward after τ
-        prefix_obs = obs[i].copy()
-        prefix_obs[tau + 1:] = obs[i, tau]
-
-        prefix_act = action[i].copy()
-        prefix_act[tau + 1:] = action[i, tau]
-
-        prefix_rew = reward[i].copy()
-        prefix_rew[tau + 1:] = 0.0
-
-        out_obs.append(np.stack([prefix_obs, obs[i]],       axis=0))
-        out_act.append(np.stack([prefix_act, action[i]],    axis=0))
-        out_rew.append(np.stack([prefix_rew, reward[i]],    axis=0))
-        out_tau.append(tau)
-        out_ckpt.append(int(ckpt[i]))
-
-        if (i + 1) % 1000 == 0 or i == N - 1:
-            print(f"  [{i+1:>5}/{N}]  stopped={n_stopped}  censored={n_censored}")
-
-        if args.n_pairs is not None and n_stopped >= args.n_pairs:
-            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
-            break
-
-    M = len(out_obs)
-    if M == 0:
-        print("\nERROR: 0 pairs generated. Lower κ so more trajectories are stopped.")
+    if len(idx_keep) == 0:
+        print("\nERROR: 0 pairs. Lower --min-adv-gap or check the pool.")
         return
 
-    obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)
-    act_out  = np.stack(out_act,  axis=0).astype(np.float32)
-    rew_out  = np.stack(out_rew,  axis=0).astype(np.float32)
-    tau_out  = np.array(out_tau,  dtype=np.int32)
-    ckpt_out = np.array(out_ckpt, dtype=np.int64)
+    # Cap: keep highest-gap pairs first
+    if args.n_pairs is not None and len(idx_keep) > args.n_pairs:
+        top      = np.argsort(-gaps[idx_keep])[:args.n_pairs]
+        idx_keep = idx_keep[top]
+        print(f"  Capped to {args.n_pairs} pairs (highest gap selected)")
+
+    M = len(idx_keep)
+
+    # ------------------------------------------------------------------
+    # Vectorised prefix construction:
+    #   steps 0 .. t*      → original (s_k, a_k, r_k)
+    #   steps t*+1 .. T-1  → repeat   (s_{t*}, a_{t*}, r_{t*})
+    # ------------------------------------------------------------------
+    obs_kept   = obs[idx_keep]                                  # (M, T, obs_dim)
+    act_kept   = action[idx_keep]                               # (M, T, act_dim)
+    rew_kept   = reward[idx_keep]                               # (M, T)
+    tau_out    = t_star[idx_keep]                               # (M,)
+    ckpt_out   = ckpt[idx_keep].astype(np.int64)
+
+    # beyond[m, t] is True when t > tau_out[m]
+    beyond     = np.arange(T)[None, :] > tau_out[:, None]      # (M, T) bool
+    obs_at_tau = obs_kept[np.arange(M), tau_out]               # (M, obs_dim)
+    act_at_tau = act_kept[np.arange(M), tau_out]               # (M, act_dim)
+    rew_at_tau = rew_kept[np.arange(M), tau_out]               # (M,)
+
+    prefix_obs = np.where(beyond[:, :, None], obs_at_tau[:, None, :], obs_kept)
+    prefix_act = np.where(beyond[:, :, None], act_at_tau[:, None, :], act_kept)
+    prefix_rew = np.where(beyond, rew_at_tau[:, None], rew_kept)  # r_τ repeated
+
+    obs_out  = np.stack([prefix_obs, obs_kept], axis=1).astype(np.float32)  # (M,2,T,obs)
+    act_out  = np.stack([prefix_act, act_kept], axis=1).astype(np.float32)
+    rew_out  = np.stack([prefix_rew, rew_kept], axis=1).astype(np.float32)
+    tau_out  = tau_out.astype(np.int32)
 
     # ------------------------------------------------------------------
     # Statistics
     # ------------------------------------------------------------------
-    print(f"\n{'─'*60}")
-    print(f"E-stop statistics")
-    print(f"{'─'*60}")
-    print(f"  Trajectories : total={N}  "
-          f"stopped={n_stopped} ({100*n_stopped/N:.1f}%)  "
-          f"censored={n_censored} ({100*n_censored/N:.1f}%)")
+    kept_gaps = gaps[idx_keep]
+    pct       = [5, 25, 50, 75, 95]
 
-    _delta_stats(delta_all)
-    _tau_stats(tau_out, T, label="Stop time τ")
+    print(f"\n{'─'*60}")
+    print(f"E-stop statistics  (ARIC oracle  t* = argmax J_t)")
+    print(f"{'─'*60}")
+    print(f"  Trajectories total   : {N}")
+    print(f"  Trivial (t*=T-1)     : {n_trivial}  ({100*n_trivial/N:.1f}%)")
+    print(f"  Gap-filtered         : {n_gap_dropped}")
+    print(f"  Pairs kept           : {M}  ({100*M/N:.1f}%)")
+
+    _tau_stats(tau_out, T, label="Stop time t*")
+
+    gv = np.percentile(kept_gaps, pct)
+    print(f"\n  Advantage gap  J[t*] − J_full:")
+    print(f"    mean={kept_gaps.mean():.3f}  std={kept_gaps.std():.3f}  "
+          f"min={kept_gaps.min():.3f}  max={kept_gaps.max():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gv))}")
+
     _reward_comparison_estop(rew_out, tau_out)
     print(f"{'─'*60}")
 
@@ -718,8 +757,8 @@ def generate_estop(pool, avi, args, rng):
              stop_time=tau_out, checkpoint_step=ckpt_out)
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs       : {obs_out.shape}  ([0]=halt prefix, [1]=full)")
-    print(f"  stop_time : {tau_out.shape}  mean τ={tau_out.mean():.1f}")
+    print(f"  obs       : {obs_out.shape}  ([0]=prefix with repeated tail, [1]=full)")
+    print(f"  stop_time : {tau_out.shape}  mean t*={tau_out.mean():.1f}")
     print(f"\nTrain with:  dataset: EstopBuffer")
 
 

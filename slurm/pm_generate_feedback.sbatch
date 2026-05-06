@@ -130,7 +130,7 @@ case "$FEEDBACK_TYPE" in
         EXTRA_ARGS=(--n-pairs "$N_PAIRS" --n-counterfactuals "$N_COUNTERFACTUALS" --skip-expert)
         ;;
     estop)
-        EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --n-pairs "$N_PAIRS" --skip-expert)
+        EXTRA_ARGS=(--n-pairs "$N_PAIRS" --skip-expert)
         ;;
     seq_estop)
         EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --horizon "$HORIZON" --n-pairs "$N_PAIRS" --skip-expert)

@@ -1,0 +1,9 @@
+import: configs/mw_state_dense/credit_cpl.yaml
+eval_env: mw_button-press-v2
+alg_kwargs:
+  bc_steps: 0
+  bc_coeff: 0.0
+dataset_kwargs:
+  path: /scratch/general/vast/u1472210/credit_labels/mw_button-press-v2/credit_labels.npz
+  batch_size: 32
+seed: 0

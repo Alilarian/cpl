@@ -60,7 +60,21 @@ POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/demo_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/seq_estop_labels}"
 RHO="${RHO:-0.8}"
 LAM="${LAM:-2.0}"
-KAPPA="${KAPPA:-1.5}"
+
+# Per-environment kappa (tuned via slurm/tune_mw_kappa.sbatch).
+# Fill in the values from tune_kappa log files before submitting.
+# Override all at once with --export=ALL,KAPPA=X, or edit the table below.
+if [[ -z "${KAPPA:-}" ]]; then
+    TASK_ENV_TMP="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "${ENVS_FILE:-slurm/manifests/demo_pool/envs.txt}")"
+    case "$TASK_ENV_TMP" in
+        mw_bin-picking-v2)   KAPPA="1.5" ;;
+        mw_button-press-v2)  KAPPA="1.5" ;;
+        mw_door-open-v2)     KAPPA="1.5" ;;
+        mw_drawer-open-v2)   KAPPA="1.5" ;;
+        mw_plate-slide-v2)   KAPPA="1.5" ;;
+        *)                   KAPPA="1.5" ;;
+    esac
+fi
 HORIZON="${HORIZON:-10}"
 MCMC_SAMPLES="${MCMC_SAMPLES:-64}"
 DISCOUNT="${DISCOUNT:-0.99}"

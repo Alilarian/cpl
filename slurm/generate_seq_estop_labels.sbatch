@@ -67,11 +67,11 @@ LAM="${LAM:-2.0}"
 if [[ -z "${KAPPA:-}" ]]; then
     TASK_ENV_TMP="$(sed -n "${SLURM_ARRAY_TASK_ID}p" "${ENVS_FILE:-slurm/manifests/demo_pool/envs.txt}")"
     case "$TASK_ENV_TMP" in
-        mw_bin-picking-v2)   KAPPA="1.7766" ;;
-        mw_button-press-v2)  KAPPA="1.5873" ;;
-        mw_door-open-v2)     KAPPA="1.5186" ;;
-        mw_drawer-open-v2)   KAPPA="2.2795" ;;
-        mw_plate-slide-v2)   KAPPA="1.8372" ;;
+        mw_bin-picking-v2)   KAPPA="1.8854" ;;
+        mw_button-press-v2)  KAPPA="1.6575" ;;
+        mw_door-open-v2)     KAPPA="1.5825" ;;
+        mw_drawer-open-v2)   KAPPA="1.5236" ;;
+        mw_plate-slide-v2)   KAPPA="1.8353" ;;
         *)                   KAPPA="1.5" ;;
     esac
 fi

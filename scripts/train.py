@@ -35,11 +35,32 @@ if __name__ == "__main__":
     parser.add_argument("--path", "-p", type=str, default=None)
     parser.add_argument("--device", "-d", type=str, default="auto")
     parser.add_argument("--seed", "-s", type=int, default=None, help="Override the seed in the config")
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                        help="Override a config value using dot-notation: e.g. "
+                             "--set dataset_kwargs.path=foo.npz --set trainer_kwargs.total_steps=50000")
     args = parser.parse_args()
 
     config = Config.load(args.config)
     if args.seed is not None:
         config["seed"] = args.seed
+
+    for kv in args.set:
+        dotted, _, raw = kv.partition("=")
+        keys = dotted.split(".")
+        # Cast: try int, float, then bool/null keywords, else keep as string
+        val: object
+        for cast in (int, float):
+            try:
+                val = cast(raw)
+                break
+            except ValueError:
+                pass
+        else:
+            val = {"null": None, "none": None, "true": True, "false": False}.get(raw.lower(), raw)
+        obj = config.config
+        for k in keys[:-1]:
+            obj = obj[k]
+        obj[keys[-1]] = val
     print(config)
     os.makedirs(args.path, exist_ok=True)  # Allow resuming from existing directories
     try_wandb_setup(args.path, config)

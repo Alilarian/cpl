@@ -377,12 +377,14 @@ def generate_pref(pool, avi, args, rng):
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
-             adv_scores=adv_out, gap=gap_out, checkpoint_step=ckpt_out)
+             adv_scores=adv_out, gap=gap_out, checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(obs_out.shape[0]))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs        : {obs_out.shape}  ([0]=preferred, [1]=non-preferred)")
-    print(f"  adv_scores : {adv_out.shape}")
-    print(f"  gap        : mean={gap_out.mean():.3f}  median={np.median(gap_out):.3f}")
+    print(f"  obs              : {obs_out.shape}  ([0]=preferred, [1]=non-preferred)")
+    print(f"  adv_scores       : {adv_out.shape}")
+    print(f"  gap              : mean={gap_out.mean():.3f}  median={np.median(gap_out):.3f}")
+    print(f"  n_choice_structures: {obs_out.shape[0]}")
     print(f"\nTrain with:  dataset: PrefBuffer")
 
 
@@ -464,11 +466,13 @@ def generate_corr(pool, avi, env, args, rng):
     save_npz(args.out,
              obs=obs_out[order], action=act_out[order], reward=rew_out[order],
              adv_scores=adv_out[order], improvement=impr_out[order],
-             checkpoint_step=ckpt_out[order])
+             checkpoint_step=ckpt_out[order],
+             n_choice_structures=np.int64(obs_out.shape[0]))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs         : {obs_out.shape}  ([0]=better, [1]=worse)")
-    print(f"  improvement : mean={impr_out.mean():.3f}  median={np.median(impr_out):.3f}")
+    print(f"  obs              : {obs_out.shape}  ([0]=better, [1]=worse)")
+    print(f"  improvement      : mean={impr_out.mean():.3f}  median={np.median(impr_out):.3f}")
+    print(f"  n_choice_structures: {obs_out.shape[0]}")
     print(f"\nTrain with:  dataset: CorrBuffer")
 
 
@@ -568,11 +572,13 @@ def generate_demo(pool, avi, env, args, rng):
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
-             adv_scores=adv_out, checkpoint_step=ckpt_out)
+             adv_scores=adv_out, checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(obs_out.shape[0]))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs        : {obs_out.shape}  ([0]=best, [-1]=worst)")
-    print(f"  adv_scores : {adv_out.shape}")
+    print(f"  obs              : {obs_out.shape}  ([0]=best, [-1]=worst)")
+    print(f"  adv_scores       : {adv_out.shape}")
+    print(f"  n_choice_structures: {obs_out.shape[0]}")
     print(f"\nTrain with:  dataset: DemoBuffer   (K={K})")
 
 
@@ -754,11 +760,13 @@ def generate_estop(pool, avi, args, rng):
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
-             stop_time=tau_out, checkpoint_step=ckpt_out)
+             stop_time=tau_out, checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(obs_out.shape[0]))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs       : {obs_out.shape}  ([0]=prefix with repeated tail, [1]=full)")
-    print(f"  stop_time : {tau_out.shape}  mean t*={tau_out.mean():.1f}")
+    print(f"  obs              : {obs_out.shape}  ([0]=prefix with repeated tail, [1]=full)")
+    print(f"  stop_time        : {tau_out.shape}  mean t*={tau_out.mean():.1f}")
+    print(f"  n_choice_structures: {obs_out.shape[0]}")
     print(f"\nTrain with:  dataset: EstopBuffer")
 
 
@@ -956,12 +964,14 @@ def generate_seq_estop(pool, avi, args, rng):
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
              stop_event=se_out, timestep=ts_out,
-             traj_idx=ti_out, checkpoint_step=ckpt_out)
+             traj_idx=ti_out, checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(n_stopped + n_censored))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs        : {obs_out.shape}  ([0]=preferred, [1]=non-preferred)")
-    print(f"  stop_event : {se_out.sum():.0f} stops / {M} pairs"
+    print(f"  obs              : {obs_out.shape}  ([0]=preferred, [1]=non-preferred)")
+    print(f"  stop_event       : {se_out.sum():.0f} stops / {M} pairs"
           f"  ({100*se_out.mean():.1f}% are stop events)")
+    print(f"  n_choice_structures: {n_stopped + n_censored}  (trajectories watched)")
     print(f"\nTrain with:  dataset: SeqEstopBuffer")
 
 
@@ -1147,12 +1157,14 @@ def generate_scalar(pool, avi, args, rng):
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
-             adv_scores=adv_out, checkpoint_step=ckpt_out)
+             adv_scores=adv_out, checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(n_windows_processed))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs        : {obs_out.shape}"
+    print(f"  obs              : {obs_out.shape}"
           f"  ([0]=preferred, [1]=non-preferred)  h={h}")
-    print(f"  adv_scores : {adv_out.shape}  (noisy scalar values f ∈ [-1,1])")
+    print(f"  adv_scores       : {adv_out.shape}  (noisy scalar values f ∈ [-1,1])")
+    print(f"  n_choice_structures: {n_windows_processed}  (rating windows; pairs={M})")
     print(f"\nTrain with:  dataset: PMFeedbackBuffer")
 
 
@@ -1279,13 +1291,15 @@ def generate_credit_assignment(pool, avi, args, rng):
     save_npz(args.out,
              obs=obs_out, action=act_out,
              adv_scores=adv_out, chosen_idx=idx_out,
-             checkpoint_step=ckpt_out)
+             checkpoint_step=ckpt_out,
+             n_choice_structures=np.int64(N))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs        : {obs_out.shape}  (N, C, k, obs_dim)")
-    print(f"  action     : {act_out.shape}")
-    print(f"  adv_scores : {adv_out.shape}  rl_sum per candidate window")
-    print(f"  chosen_idx : {idx_out.shape}  oracle-selected window index (argmax)")
+    print(f"  obs              : {obs_out.shape}  (N, C, k, obs_dim)")
+    print(f"  action           : {act_out.shape}")
+    print(f"  adv_scores       : {adv_out.shape}  rl_sum per candidate window")
+    print(f"  chosen_idx       : {idx_out.shape}  oracle-selected window index (argmax)")
+    print(f"  n_choice_structures: {N}  (trajectories with credit assignment)")
     print(f"\nTrain with:  dataset: PMCreditAssignmentBuffer")
     print(f"             alg:     PointMassCreditAssignmentCPL")
 

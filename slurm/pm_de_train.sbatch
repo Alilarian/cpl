@@ -117,7 +117,7 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
 
-export WANDB_PROJECT="pm-cpl-data-efficiency"
+export WANDB_PROJECT="${WANDB_PROJECT:-pm-cpl-data-efficiency}"
 
 python3 "${REPO_ROOT}/scripts/train.py" \
     --config "$CONFIG_PATH" \

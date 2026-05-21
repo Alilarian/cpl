@@ -357,16 +357,16 @@ def generate_pref(pool, avi, args, rng):
         print("  ERROR: 0 pairs kept. Lower --min-adv-gap.")
         return
 
-    # Cap: keep highest-gap pairs first
+    # Cap: random subsample (same rule as all other feedback types)
     if args.n_pairs is not None and n_kept > args.n_pairs:
-        top = np.argsort([-g for g in out_gap])[:args.n_pairs]
-        out_obs  = [out_obs[i]  for i in top]
-        out_act  = [out_act[i]  for i in top]
-        out_rew  = [out_rew[i]  for i in top]
-        out_adv  = [out_adv[i]  for i in top]
-        out_gap  = [out_gap[i]  for i in top]
-        out_ckpt = [out_ckpt[i] for i in top]
-        print(f"  Capped to {args.n_pairs} pairs (highest gap selected)")
+        perm = rng.permutation(n_kept)[:args.n_pairs]
+        out_obs  = [out_obs[i]  for i in perm]
+        out_act  = [out_act[i]  for i in perm]
+        out_rew  = [out_rew[i]  for i in perm]
+        out_adv  = [out_adv[i]  for i in perm]
+        out_gap  = [out_gap[i]  for i in perm]
+        out_ckpt = [out_ckpt[i] for i in perm]
+        print(f"  Capped to {args.n_pairs} pairs (random subsample)")
 
     obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)
     act_out  = np.stack(out_act,  axis=0).astype(np.float32)
@@ -1313,7 +1313,8 @@ def main():
         description="Simulate human feedback for PointMass using VI advantage."
     )
     parser.add_argument("--type", required=True,
-                        choices=["pref", "corr", "demo", "estop", "seq_estop",
+                        choices=["pref", "corr", "demo",
+                                 "seq_estop",   # "estop" disabled — use seq_estop
                                  "scalar", "credit_assignment"],
                         help="Feedback type to generate")
     parser.add_argument("--pool",          type=str, required=True,
@@ -1384,7 +1385,7 @@ def main():
     print(f"  Seed         : {args.seed}")
     if args.n_pairs is not None:
         print(f"  n_pairs      : {args.n_pairs}  (cap)")
-    if args.type in ("estop", "seq_estop"):
+    if args.type == "seq_estop":
         print(f"  ρ={args.rho}  λ={args.lam}  κ={args.kappa}")
     if args.type == "seq_estop":
         print(f"  horizon h    : {args.horizon}")
@@ -1432,8 +1433,8 @@ def main():
     elif args.type == "demo":
         env = PointMassGymEnv(step_cost=0.01)
         generate_demo(pool, avi, env, args, rng)
-    elif args.type == "estop":
-        generate_estop(pool, avi, args, rng)
+    # elif args.type == "estop":  # disabled — use seq_estop instead
+    #     generate_estop(pool, avi, args, rng)
     elif args.type == "seq_estop":
         generate_seq_estop(pool, avi, args, rng)
     elif args.type == "scalar":

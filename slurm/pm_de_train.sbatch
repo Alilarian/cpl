@@ -1,28 +1,28 @@
 #!/bin/bash
 # Train CPL on PointMass data-efficiency sweep.
 #
-# Same 72-task matrix as pm_de_generate.sbatch — must run after it.
+# Same 162-task matrix as pm_de_generate.sbatch — must run after it.
 #
-#   Types  : pref  corr  demo  estop  scalar  credit_assignment
-#   Budgets: 100   300   1000  3000   10000   20000
-#   Seeds  : 0  1
+#   Types  : pref  corr  demo  seq_estop  scalar  credit_assignment
+#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000
+#   Seeds  : 0  1  2
 #
 # By-type task ranges:
-#   pref              1-12
-#   corr             13-24
-#   demo             25-36
-#   estop            37-48
-#   scalar           49-60
-#   credit_assignment 61-72
+#   pref              1-27
+#   corr             28-54
+#   demo             55-81
+#   seq_estop        82-108
+#   scalar          109-135
+#   credit_assignment 136-162
 #
 # Runs land in:  runs/pm_de/<type>_b<budget:06d>_s<seed>/
 # WandB project: pm-cpl-data-efficiency
 # WandB name:    <type>_b<budget:06d>_s<seed>
 #
 # Usage:
-#   sbatch --array=1-72 \
+#   sbatch --array=1-162 \
 #          --job-name=pm_de_train \
-#          --time=4:00:00 \
+#          --time=6:00:00 \
 #          --cpus-per-task=4 \
 #          --mem=16G \
 #          --gres=gpu:1 \
@@ -30,9 +30,9 @@
 #          --partition=<partition> \
 #          slurm/pm_de_train.sbatch
 #
-#   sbatch --array=1-12 ...      # smoke-test: pref only
-#   sbatch --array=1-36 ...      # cluster A
-#   sbatch --array=37-72 ...     # cluster B (same shared FS)
+#   sbatch --array=1-27 ...      # smoke-test: pref only
+#   sbatch --array=1-81 ...      # cluster A
+#   sbatch --array=82-162 ...    # cluster B (same shared FS)
 #
 # Optional env overrides:
 #   RUNS_DIR    default: runs
@@ -46,7 +46,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "ERROR: submit with --array=1-72 (or a sub-range)"
+    echo "ERROR: submit with --array=1-162 (or a sub-range)"
     exit 1
 fi
 
@@ -58,26 +58,26 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # ── Matrix ────────────────────────────────────────────────────────────────
-TYPES=(pref corr demo estop scalar credit_assignment)
-BUDGETS=(100 300 1000 3000 10000 20000)
-SEEDS=(0 1)
+TYPES=(pref corr demo seq_estop scalar credit_assignment)
+BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000)
+SEEDS=(0 1 2)
 
 ID=$(( SLURM_ARRAY_TASK_ID - 1 ))
-TYPE_IDX=$(( ID / 12 ))
-BUDGET_IDX=$(( (ID % 12) / 2 ))
-SEED_IDX=$(( ID % 2 ))
+TYPE_IDX=$(( ID / 27 ))
+BUDGET_IDX=$(( (ID % 27) / 3 ))
+SEED_IDX=$(( ID % 3 ))
 
 FEEDBACK_TYPE="${TYPES[$TYPE_IDX]}"
 BUDGET="${BUDGETS[$BUDGET_IDX]}"
 SEED="${SEEDS[$SEED_IDX]}"
 BUDGET_STR=$(printf "%06d" "$BUDGET")
 
-# ── Config: one yaml per feedback type (existing configs, unchanged) ───────
+# ── Config: one yaml per feedback type ────────────────────────────────────
 declare -A TYPE_CONFIG
 TYPE_CONFIG[pref]=cpl_pref.yaml
 TYPE_CONFIG[corr]=cpl_corr.yaml
 TYPE_CONFIG[demo]=cpl_demo.yaml
-TYPE_CONFIG[estop]=cpl_estop.yaml
+TYPE_CONFIG[seq_estop]=cpl_seq_estop.yaml
 TYPE_CONFIG[scalar]=cpl_scalar.yaml
 TYPE_CONFIG[credit_assignment]=cpl_credit_assignment.yaml
 
@@ -124,4 +124,5 @@ python3 "${REPO_ROOT}/scripts/train.py" \
     --path   "$RUN_PATH"   \
     --seed   "$SEED"       \
     --set    "dataset_kwargs.path=${LABELS_NPZ}" \
-    --set    "budget=${BUDGET}"
+    --set    "budget=${BUDGET}"                  \
+    --set    "trainer_kwargs.total_steps=150000"

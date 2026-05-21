@@ -1,29 +1,29 @@
 #!/bin/bash
 # Generate PointMass data-efficiency datasets.
 #
-# Matrix: 6 feedback types × 6 budgets × 2 seeds = 72 tasks
+# Matrix: 6 feedback types × 9 budgets × 3 seeds = 162 tasks
 #
-#   Types  : pref  corr  demo  estop  scalar  credit_assignment
-#   Budgets: 100   300   1000  3000   10000   20000
-#   Seeds  : 0  1
+#   Types  : pref  corr  demo  seq_estop  scalar  credit_assignment
+#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000
+#   Seeds  : 0  1  2
 #
 # Task-ID mapping (1-indexed):
-#   type_idx   = (TASK_ID - 1) / 12          (0..5)
-#   budget_idx = ((TASK_ID - 1) % 12) / 2    (0..5)
-#   seed_idx   = (TASK_ID - 1) % 2           (0 or 1)
+#   type_idx   = (TASK_ID - 1) / 27          (0..5)
+#   budget_idx = ((TASK_ID - 1) % 27) / 3    (0..8)
+#   seed_idx   = (TASK_ID - 1) % 3           (0, 1, or 2)
 #
 # By-type task ranges (useful for splitting across clusters):
-#   pref              1-12
-#   corr             13-24
-#   demo             25-36
-#   estop            37-48
-#   scalar           49-60
-#   credit_assignment 61-72
+#   pref              1-27
+#   corr             28-54
+#   demo             55-81
+#   seq_estop        82-108
+#   scalar          109-135
+#   credit_assignment 136-162
 #
 # Outputs: datasets/pm/data_eff/<type>_b<budget:06d>_s<seed>.npz
 #
 # Usage:
-#   sbatch --array=1-72 \        # full sweep
+#   sbatch --array=1-162 \       # full sweep
 #          --job-name=pm_de_gen \
 #          --time=1:00:00 \
 #          --cpus-per-task=2 \
@@ -32,9 +32,9 @@
 #          --partition=<partition> \
 #          slurm/pm_de_generate.sbatch
 #
-#   sbatch --array=1-12 ...      # smoke-test: pref only
-#   sbatch --array=1-36 ...      # cluster A
-#   sbatch --array=37-72 ...     # cluster B (same shared FS)
+#   sbatch --array=1-27 ...      # smoke-test: pref only
+#   sbatch --array=1-81 ...      # cluster A
+#   sbatch --array=82-162 ...    # cluster B (same shared FS)
 #
 # Optional env overrides:
 #   POOL_NPZ        default: datasets/pm/pool.npz
@@ -49,7 +49,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "ERROR: submit with --array=1-72 (or a sub-range)"
+    echo "ERROR: submit with --array=1-162 (or a sub-range)"
     exit 1
 fi
 
@@ -61,14 +61,14 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # ── Matrix ────────────────────────────────────────────────────────────────
-TYPES=(pref corr demo estop scalar credit_assignment)
-BUDGETS=(100 300 1000 3000 10000 20000)
-SEEDS=(0 1)
+TYPES=(pref corr demo seq_estop scalar credit_assignment)
+BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000)
+SEEDS=(0 1 2)
 
 ID=$(( SLURM_ARRAY_TASK_ID - 1 ))
-TYPE_IDX=$(( ID / 12 ))
-BUDGET_IDX=$(( (ID % 12) / 2 ))
-SEED_IDX=$(( ID % 2 ))
+TYPE_IDX=$(( ID / 27 ))
+BUDGET_IDX=$(( (ID % 27) / 3 ))
+SEED_IDX=$(( ID % 3 ))
 
 FEEDBACK_TYPE="${TYPES[$TYPE_IDX]}"
 BUDGET="${BUDGETS[$BUDGET_IDX]}"
@@ -112,7 +112,7 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$OUTPUT_DIR"
 
-# ── Type-specific args (mirrors pm_generate_feedback.sbatch defaults) ─────
+# ── Type-specific args ─────────────────────────────────────────────────────
 EXTRA_ARGS=()
 case "$FEEDBACK_TYPE" in
     pref)
@@ -124,8 +124,8 @@ case "$FEEDBACK_TYPE" in
     demo)
         EXTRA_ARGS=(--n-counterfactuals 4 --skip-expert)
         ;;
-    estop)
-        EXTRA_ARGS=(--skip-expert)
+    seq_estop)
+        EXTRA_ARGS=(--rho 0.8 --lam 2.0 --kappa 1.9101 --horizon 4 --skip-expert)
         ;;
     scalar)
         EXTRA_ARGS=(--segment-len 8 --window-size 10 --noise-std 0.1 \

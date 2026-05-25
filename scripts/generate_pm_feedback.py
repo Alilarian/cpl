@@ -303,8 +303,15 @@ def simulate_estop(delta: np.ndarray, rho: float, lam: float, kappa: float,
 
 def generate_pref(pool, avi, args, rng):
     """
-    Score all pool segments, randomly pair them, keep pairs where
-    |rl_sum_a − rl_sum_b| >= gap_threshold.
+    Score all N pool segments, sample a fixed candidate pool of pairs, filter
+    by |gap|, sort by gap descending, take top n_pairs.
+
+    Subset guarantee
+    ----------------
+    When --n-candidates is set to a fixed value (independent of --n-pairs),
+    every budget level uses the same rng calls → same candidate pairs →
+    same filter mask → same sorted order.  Budget B1 < B2 then gets
+    sorted_pairs[:B1] which is a literal prefix of sorted_pairs[:B2].
     """
     obs    = pool["obs"]              # (N, T, 2)
     action = pool["action"]           # (N, T, 2)
@@ -312,79 +319,95 @@ def generate_pref(pool, avi, args, rng):
     ckpt   = pool["checkpoint_step"]  # (N,)
     N      = obs.shape[0]
 
+    # ── Step 1: score all segments ──────────────────────────────────────
     print(f"\nScoring {N} pool segments …")
-    scores = score_rl_sum(avi, obs, reward)             # (N,)
+    scores = score_rl_sum(avi, obs, reward)                          # (N,)
     print(f"  rl_sum: mean={scores.mean():.3f}  std={scores.std():.3f}"
           f"  min={scores.min():.3f}  max={scores.max():.3f}")
 
-    # Shuffle indices to make random pairs
-    idx = rng.permutation(N)
-    if N % 2 == 1:
-        idx = idx[:-1]                                  # drop last if odd
-    a_idx = idx[:N // 2]
-    b_idx = idx[N // 2:]
+    # ── Step 2: sample candidate pairs (fixed pool → subset guarantee) ──
+    if args.n_candidates is not None:
+        n_cands = args.n_candidates
+    else:
+        n_cands = int(args.n_pairs * args.oversampling_factor) if args.n_pairs else N * 3
 
-    gap_threshold = args.min_adv_gap
-    print(f"  Gap threshold  : {gap_threshold:.4f}")
+    print(f"\nSampling {n_cands:,} candidate pairs (N={N}, with replacement) …")
+    idx_a = rng.integers(0, N, size=n_cands)
+    idx_b = rng.integers(0, N, size=n_cands)
+    same  = idx_a == idx_b
+    while same.any():
+        idx_b[same] = rng.integers(0, N, size=int(same.sum()))
+        same = idx_a == idx_b
 
-    out_obs, out_act, out_rew, out_adv, out_gap, out_ckpt = [], [], [], [], [], []
+    # ── Step 3: filter by |gap| ─────────────────────────────────────────
+    raw_gap = scores[idx_a] - scores[idx_b]                         # signed (N_cands,)
+    keep    = np.abs(raw_gap) >= args.min_adv_gap
+    idx_a   = idx_a[keep]
+    idx_b   = idx_b[keep]
+    raw_gap = raw_gap[keep]
+    n_kept  = int(keep.sum())
 
-    n_kept = n_dropped = 0
-    for ai, bi in zip(a_idx, b_idx):
-        gap = float(scores[ai] - scores[bi])
-        if abs(gap) < gap_threshold:
-            n_dropped += 1
-            continue
-
-        # Index 0 = preferred (higher rl_sum)
-        if gap >= 0:
-            pref_i, nonpref_i = int(ai), int(bi)
-        else:
-            pref_i, nonpref_i = int(bi), int(ai)
-            gap = -gap
-
-        out_obs.append(np.stack([obs[pref_i],    obs[nonpref_i]],    axis=0))
-        out_act.append(np.stack([action[pref_i], action[nonpref_i]], axis=0))
-        out_rew.append(np.stack([reward[pref_i], reward[nonpref_i]], axis=0))
-        out_adv.append([scores[pref_i], scores[nonpref_i]])
-        out_gap.append(gap)
-        out_ckpt.append([int(ckpt[pref_i]), int(ckpt[nonpref_i])])
-        n_kept += 1
-
-    print(f"  Pairs kept={n_kept}  dropped={n_dropped} (gap < threshold)")
+    print(f"  After gap filter (|gap| ≥ {args.min_adv_gap}): "
+          f"{n_kept:,} / {n_cands:,}  ({100 * n_kept / n_cands:.1f}%)")
 
     if n_kept == 0:
-        print("  ERROR: 0 pairs kept. Lower --min-adv-gap.")
+        print("  ERROR: 0 pairs kept. Lower --min-adv-gap or raise --n-candidates.")
         return
 
-    # Cap: random subsample (same rule as all other feedback types)
-    if args.n_pairs is not None and n_kept > args.n_pairs:
-        perm = rng.permutation(n_kept)[:args.n_pairs]
-        out_obs  = [out_obs[i]  for i in perm]
-        out_act  = [out_act[i]  for i in perm]
-        out_rew  = [out_rew[i]  for i in perm]
-        out_adv  = [out_adv[i]  for i in perm]
-        out_gap  = [out_gap[i]  for i in perm]
-        out_ckpt = [out_ckpt[i] for i in perm]
-        print(f"  Capped to {args.n_pairs} pairs (random subsample)")
+    if args.n_pairs is not None and n_kept < args.n_pairs:
+        print(f"  WARNING: only {n_kept:,} pairs survive the filter "
+              f"(target {args.n_pairs:,}). Raise --n-candidates or lower --min-adv-gap.")
 
-    obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)
-    act_out  = np.stack(out_act,  axis=0).astype(np.float32)
-    rew_out  = np.stack(out_rew,  axis=0).astype(np.float32)
-    adv_out  = np.array(out_adv,  dtype=np.float32)
-    gap_out  = np.array(out_gap,  dtype=np.float32)
-    ckpt_out = np.array(out_ckpt, dtype=np.int64)
+    # ── Step 4: sort by |gap| descending (most informative first) ───────
+    order   = np.argsort(-np.abs(raw_gap))
+    idx_a   = idx_a[order]
+    idx_b   = idx_b[order]
+    raw_gap = raw_gap[order]
+
+    # ── Step 5: take top n_pairs (prefix of sorted list) ─────────────────
+    if args.n_pairs is not None:
+        idx_a   = idx_a[:args.n_pairs]
+        idx_b   = idx_b[:args.n_pairs]
+        raw_gap = raw_gap[:args.n_pairs]
+
+    n_out = len(idx_a)
+
+    # ── Step 6: build arrays — index 0 = better (higher rl_sum) ─────────
+    a_is_better = raw_gap >= 0
+    better_idx  = np.where(a_is_better, idx_a, idx_b)
+    worse_idx   = np.where(a_is_better, idx_b, idx_a)
+
+    obs_out  = np.stack([obs[better_idx],    obs[worse_idx]],    axis=1).astype(np.float32)
+    act_out  = np.stack([action[better_idx], action[worse_idx]], axis=1).astype(np.float32)
+    rew_out  = np.stack([reward[better_idx], reward[worse_idx]], axis=1).astype(np.float32)
+    adv_out  = np.stack([scores[better_idx], scores[worse_idx]], axis=1).astype(np.float32)
+    gap_out  = np.abs(raw_gap).astype(np.float32)
+    ckpt_out = np.stack([ckpt[better_idx],   ckpt[worse_idx]],   axis=1).astype(np.int64)
+
+    pct = [5, 25, 50, 75, 95]
+    gv  = np.percentile(gap_out, pct)
+    print(f"\n{'─'*60}")
+    print(f"Pref statistics")
+    print(f"{'─'*60}")
+    print(f"  Pool segments    : {N}")
+    print(f"  Candidates       : {n_cands:,}")
+    print(f"  After gap filter : {n_kept:,}")
+    print(f"  Output pairs     : {n_out:,}")
+    print(f"\n  |gap| (better − worse rl_sum):")
+    print(f"    mean={gap_out.mean():.3f}  std={gap_out.std():.3f}  "
+          f"min={gap_out.min():.3f}  max={gap_out.max():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gv))}")
+    print(f"{'─'*60}")
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
              adv_scores=adv_out, gap=gap_out, checkpoint_step=ckpt_out,
-             n_choice_structures=np.int64(obs_out.shape[0]))
+             n_choice_structures=np.int64(n_out))
 
     print(f"\nSaved → {args.out}")
-    print(f"  obs              : {obs_out.shape}  ([0]=preferred, [1]=non-preferred)")
-    print(f"  adv_scores       : {adv_out.shape}")
+    print(f"  obs              : {obs_out.shape}  ([0]=better, [1]=worse)")
     print(f"  gap              : mean={gap_out.mean():.3f}  median={np.median(gap_out):.3f}")
-    print(f"  n_choice_structures: {obs_out.shape[0]}")
+    print(f"  n_choice_structures: {n_out}")
     print(f"\nTrain with:  dataset: PrefBuffer")
 
 
@@ -1326,19 +1349,32 @@ def main():
 
     # Output size cap
     parser.add_argument("--n-pairs", type=int, default=None,
-                        help="Max feedback pairs/sets to save (default: all). "
-                             "pref keeps highest-gap pairs; corr/demo/estop/seq_estop "
-                             "stop early once the count is reached.")
+                        help="Number of pairs/sets to save (default: all). "
+                             "pref: top-n by gap from the sorted candidate pool. "
+                             "corr/demo/seq_estop/scalar: stop early once reached.")
     parser.add_argument("--skip-expert", action="store_true", default=False,
                         help="Remove tier-0 (expert, checkpoint_step==0) segments "
                              "from the pool before generating feedback. Recommended "
-                             "for corr/estop/seq_estop so the expert rollout provides "
+                             "for corr/seq_estop so the expert rollout provides "
                              "real correction signal over sub-optimal pool segments.")
 
     # Common scoring
     parser.add_argument("--gamma",        type=float, default=0.99)
-    parser.add_argument("--min-adv-gap",  type=float, default=0.0,
-                        help="Min |rl_sum gap| to keep a pair (default: 0.0)")
+    parser.add_argument("--min-adv-gap",  type=float, default=0.5,
+                        help="Min |rl_sum gap| to keep a pair (default: 0.5). "
+                             "Used by pref, corr, demo.")
+
+    # Pref-specific candidate pool
+    parser.add_argument("--n-candidates", type=int, default=None,
+                        help="Fixed number of candidate pairs to sample for pref "
+                             "(default: None → n_pairs × oversampling_factor). "
+                             "Set to a fixed value across all budget runs to guarantee "
+                             "that smaller budgets are literal subsets of larger ones.")
+    parser.add_argument("--oversampling-factor", type=float, default=3.0,
+                        help="Fallback candidate multiplier when --n-candidates is not "
+                             "set: n_candidates = n_pairs × factor (default: 3.0). "
+                             "WARNING: this breaks the subset property across budget "
+                             "levels since n_candidates then varies with n_pairs.")
 
     # Demo-specific
     parser.add_argument("--n-counterfactuals", type=int, default=4,

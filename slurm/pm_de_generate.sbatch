@@ -116,13 +116,15 @@ mkdir -p "$OUTPUT_DIR"
 EXTRA_ARGS=()
 case "$FEEDBACK_TYPE" in
     pref)
-        EXTRA_ARGS=(--skip-expert)
+        # --n-candidates fixed at max_budget(20000) × 3 = 60000 so every budget
+        # level draws from the same candidate pool → smaller budget IS a subset
+        EXTRA_ARGS=(--skip-expert --n-candidates 60000 --min-adv-gap 0.5)
         ;;
     corr)
-        EXTRA_ARGS=(--skip-expert)
+        EXTRA_ARGS=(--skip-expert --min-adv-gap 0.5)
         ;;
     demo)
-        EXTRA_ARGS=(--n-counterfactuals 4 --skip-expert)
+        EXTRA_ARGS=(--n-counterfactuals 4 --skip-expert --min-adv-gap 0.5)
         ;;
     seq_estop)
         EXTRA_ARGS=(--rho 0.8 --lam 2.0 --kappa 1.9101 --horizon 4 --skip-expert)

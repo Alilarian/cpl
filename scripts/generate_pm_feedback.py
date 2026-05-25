@@ -1400,8 +1400,8 @@ def main():
                         help="Sliding window size W (default: 10)")
     parser.add_argument("--noise-std",    type=float, default=0.0,
                         help="Std of Gaussian noise added to oracle scalar (default: 0.0, no noise)")
-    parser.add_argument("--scalar-delta", type=float, default=0.0,
-                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.0, no filtering)")
+    parser.add_argument("--scalar-delta", type=float, default=0.5,
+                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.5)")
 
     # Credit-assignment specific
     parser.add_argument("--subsegment-len", type=int, default=12,

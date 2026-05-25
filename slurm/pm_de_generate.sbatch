@@ -131,7 +131,7 @@ case "$FEEDBACK_TYPE" in
         ;;
     scalar)
         EXTRA_ARGS=(--segment-len 8 --window-size 10 --noise-std 0.0 \
-                    --scalar-delta 0.0 --skip-expert)
+                    --scalar-delta 0.5 --skip-expert)
         ;;
     credit_assignment)
         EXTRA_ARGS=(--subsegment-len 12 --skip-expert)

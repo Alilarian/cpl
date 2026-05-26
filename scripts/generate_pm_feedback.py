@@ -358,13 +358,20 @@ def generate_pref(pool, avi, args, rng):
         print(f"  WARNING: only {n_kept:,} pairs survive the filter "
               f"(target {args.n_pairs:,}). Raise --n-candidates or lower --min-adv-gap.")
 
-    # ── Step 4: sort by |gap| descending (most informative first) ───────
-    order   = np.argsort(-np.abs(raw_gap))
+    # ── Step 4: order filtered pairs ────────────────────────────────────
+    if args.sort_by_gap:
+        # Sort by |gap| descending: top-n = most extreme comparisons
+        order = np.argsort(-np.abs(raw_gap))
+        print(f"  Ordering: sorted by gap descending (most informative first)")
+    else:
+        # Random shuffle: nested subsets are representative, not extreme
+        order = rng.permutation(n_kept)
+        print(f"  Ordering: random shuffle (nested representative subsets)")
     idx_a   = idx_a[order]
     idx_b   = idx_b[order]
     raw_gap = raw_gap[order]
 
-    # ── Step 5: take top n_pairs (prefix of sorted list) ─────────────────
+    # ── Step 5: take top n_pairs (prefix of sorted/shuffled list) ────────
     if args.n_pairs is not None:
         idx_a   = idx_a[:args.n_pairs]
         idx_b   = idx_b[:args.n_pairs]
@@ -1375,6 +1382,11 @@ def main():
                              "set: n_candidates = n_pairs × factor (default: 3.0). "
                              "WARNING: this breaks the subset property across budget "
                              "levels since n_candidates then varies with n_pairs.")
+    parser.add_argument("--sort-by-gap", action="store_true", default=False,
+                        help="Sort filtered candidates by |gap| descending before "
+                             "taking the top-n prefix (default: False — random shuffle). "
+                             "Shuffle gives representative nested subsets; sort gives "
+                             "the most extreme comparisons at every budget level.")
 
     # Demo-specific
     parser.add_argument("--n-counterfactuals", type=int, default=4,

@@ -1360,7 +1360,7 @@ def main():
 
     # Common scoring
     parser.add_argument("--gamma",        type=float, default=0.99)
-    parser.add_argument("--min-adv-gap",  type=float, default=0.5,
+    parser.add_argument("--min-adv-gap",  type=float, default=0.01,
                         help="Min |rl_sum gap| to keep a pair (default: 0.5). "
                              "Used by pref, corr, demo.")
 
@@ -1400,8 +1400,8 @@ def main():
                         help="Sliding window size W (default: 10)")
     parser.add_argument("--noise-std",    type=float, default=0.0,
                         help="Std of Gaussian noise added to oracle scalar (default: 0.0, no noise)")
-    parser.add_argument("--scalar-delta", type=float, default=0.5,
-                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.5)")
+    parser.add_argument("--scalar-delta", type=float, default=0.01,
+                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.01)")
 
     # Credit-assignment specific
     parser.add_argument("--subsegment-len", type=int, default=12,

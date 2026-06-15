@@ -114,7 +114,6 @@ def rollout_episodes(env, policy_fn, n_episodes):
             })
     return episodes
 
-
 def sample_segments(episodes, n_segments, segment_length, rng):
     """
     Sample n_segments of exactly segment_length steps from episodes.
@@ -146,7 +145,6 @@ def sample_segments(episodes, n_segments, segment_length, rng):
         "reward": np.stack(seg_rew,    axis=0),
         "state":  np.stack(seg_states, axis=0),
     }
-
 
 # ---------------------------------------------------------------------------
 # Main

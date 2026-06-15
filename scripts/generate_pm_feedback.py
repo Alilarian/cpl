@@ -417,7 +417,6 @@ def generate_pref(pool, avi, args, rng):
     print(f"  n_choice_structures: {n_out}")
     print(f"\nTrain with:  dataset: PrefBuffer")
 
-
 # ---------------------------------------------------------------------------
 # Feedback type: corrective
 # ---------------------------------------------------------------------------

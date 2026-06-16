@@ -371,11 +371,13 @@ class CreditAssignmentCPL(CPL):
         action : (B, C, k, act_dim)
         label  : (B,) long            index of the oracle-selected window
 
-    Loss (ARIC credit assignment):
-        adv_c = α · Σ_t log π(a_t^c | s_t^c)    for each candidate c ∈ 0..C-1
-        L_ca  = -log softmax(adv)[chosen_c]
-              = cross_entropy(adv, chosen_idx)
+    Loss (biased credit assignment):
+        adv_c     = α · Σ_t log π(a_t^c | s_t^c)    for each candidate c ∈ 0..C-1
+        logit_c   = adv_c              for c = chosen   (unbiased)
+        logit_c   = bias · adv_c      for c ≠ chosen   (downweighted)
+        L_ca      = cross_entropy(logits, chosen_idx)
 
+    contrastive_bias=1.0 recovers the standard unbiased cross-entropy.
     BC loss: NLL on the chosen window only.
     """
 
@@ -397,7 +399,11 @@ class CreditAssignmentCPL(CPL):
 
         seg_adv  = self.alpha * lp.sum(dim=-1)           # (B, C)
         chosen   = batch["label"].long()                  # (B,)
-        ca_loss  = F.cross_entropy(seg_adv, chosen)
+
+        # Downweight non-chosen candidates by contrastive_bias (1.0 = unbiased)
+        bias_mask = torch.full_like(seg_adv, self.contrastive_bias)
+        bias_mask[torch.arange(B, device=seg_adv.device), chosen] = 1.0
+        ca_loss  = F.cross_entropy(seg_adv * bias_mask, chosen)
 
         # BC: NLL on the oracle-chosen window
         bc_loss  = -lp[torch.arange(B, device=lp.device), chosen, :].mean()

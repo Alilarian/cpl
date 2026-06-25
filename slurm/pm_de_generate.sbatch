@@ -1,29 +1,29 @@
 #!/bin/bash
 # Generate PointMass data-efficiency datasets.
 #
-# Matrix: 6 feedback types × 10 budgets × 5 seeds = 300 tasks
+# Matrix: 6 feedback types × 11 budgets × 5 seeds = 330 tasks
 #
 #   Types  : pref  corr  demo  seq_estop  scalar  credit_assignment
-#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000  40000
+#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000  40000  100000
 #   Seeds  : 0  1  2  3  4
 #
 # Task-ID mapping (1-indexed):
-#   type_idx   = (TASK_ID - 1) / 50          (0..5)
-#   budget_idx = ((TASK_ID - 1) % 50) / 5    (0..9)
+#   type_idx   = (TASK_ID - 1) / 55          (0..5)
+#   budget_idx = ((TASK_ID - 1) % 55) / 5    (0..10)
 #   seed_idx   = (TASK_ID - 1) % 5           (0..4)
 #
 # By-type task ranges (useful for splitting across clusters):
-#   pref               1-50
-#   corr              51-100
-#   demo             101-150
-#   seq_estop        151-200
-#   scalar           201-250
-#   credit_assignment 251-300
+#   pref                1-55
+#   corr               56-110
+#   demo              111-165
+#   seq_estop         166-220
+#   scalar            221-275
+#   credit_assignment 276-330
 #
 # Outputs: datasets/pm/data_eff/<type>_b<budget:06d>_s<seed>.npz
 #
 # Usage:
-#   sbatch --array=1-300 \       # full sweep
+#   sbatch --array=1-330 \       # full sweep
 #          --job-name=pm_de_gen \
 #          --time=1:00:00 \
 #          --cpus-per-task=2 \
@@ -32,9 +32,9 @@
 #          --partition=<partition> \
 #          slurm/pm_de_generate.sbatch
 #
-#   sbatch --array=1-50 ...      # smoke-test: pref only
-#   sbatch --array=1-150 ...     # cluster A
-#   sbatch --array=151-300 ...   # cluster B (same shared FS)
+#   sbatch --array=1-55 ...      # smoke-test: pref only
+#   sbatch --array=1-165 ...     # cluster A
+#   sbatch --array=166-330 ...   # cluster B (same shared FS)
 #
 # Optional env overrides:
 #   POOL_NPZ        default: datasets/pm/pool.npz
@@ -49,7 +49,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "ERROR: submit with --array=1-300 (or a sub-range)"
+    echo "ERROR: submit with --array=1-330 (or a sub-range)"
     exit 1
 fi
 
@@ -62,12 +62,12 @@ REPO_ROOT="$SUBMIT_DIR"
 
 # ── Matrix ────────────────────────────────────────────────────────────────
 TYPES=(pref corr demo seq_estop scalar credit_assignment)
-BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000 40000)
+BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000 40000 100000)
 SEEDS=(0 1 2 3 4)
 
 ID=$(( SLURM_ARRAY_TASK_ID - 1 ))
-TYPE_IDX=$(( ID / 50 ))
-BUDGET_IDX=$(( (ID % 50) / 5 ))
+TYPE_IDX=$(( ID / 55 ))
+BUDGET_IDX=$(( (ID % 55) / 5 ))
 SEED_IDX=$(( ID % 5 ))
 
 FEEDBACK_TYPE="${TYPES[$TYPE_IDX]}"
@@ -116,9 +116,9 @@ mkdir -p "$OUTPUT_DIR"
 EXTRA_ARGS=()
 case "$FEEDBACK_TYPE" in
     pref)
-        # --n-candidates fixed at max_budget(40000) × 3 = 120000 so every budget
+        # --n-candidates fixed at max_budget(100000) × 3 = 300000 so every budget
         # level draws from the same candidate pool → smaller budget IS a subset
-        EXTRA_ARGS=(--skip-expert --n-candidates 120000 --min-adv-gap 0.01)
+        EXTRA_ARGS=(--skip-expert --n-candidates 300000 --min-adv-gap 0.01)
         ;;
     corr)
         EXTRA_ARGS=(--skip-expert --min-adv-gap 0.01)

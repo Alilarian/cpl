@@ -4,23 +4,23 @@
 # Same 300-task matrix as pm_de_generate.sbatch — must run after it.
 #
 #   Types  : pref  corr  demo  seq_estop  scalar  credit_assignment
-#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000  40000
+#   Budgets: 50  100  300  600  1000  2000  5000  10000  20000  40000  100000
 #   Seeds  : 0  1  2  3  4
 #
 # By-type task ranges:
-#   pref               1-50
-#   corr              51-100
-#   demo             101-150
-#   seq_estop        151-200
-#   scalar           201-250
-#   credit_assignment 251-300
+#   pref                1-55
+#   corr               56-110
+#   demo              111-165
+#   seq_estop         166-220
+#   scalar            221-275
+#   credit_assignment 276-330
 #
 # Runs land in:  runs/pm_de/<type>_b<budget:06d>_s<seed>/
 # WandB project: pm-cpl-data-efficiency
 # WandB name:    <type>_b<budget:06d>_s<seed>
 #
 # Usage:
-#   sbatch --array=1-300 \
+#   sbatch --array=1-330 \
 #          --job-name=pm_de_train \
 #          --time=6:00:00 \
 #          --cpus-per-task=4 \
@@ -30,9 +30,9 @@
 #          --partition=<partition> \
 #          slurm/pm_de_train.sbatch
 #
-#   sbatch --array=1-50 ...      # smoke-test: pref only
-#   sbatch --array=1-150 ...     # cluster A
-#   sbatch --array=151-300 ...   # cluster B (same shared FS)
+#   sbatch --array=1-55 ...      # smoke-test: pref only
+#   sbatch --array=1-165 ...     # cluster A
+#   sbatch --array=166-330 ...   # cluster B (same shared FS)
 #
 # Optional env overrides:
 #   RUNS_DIR    default: runs
@@ -46,7 +46,7 @@
 set -euo pipefail
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "ERROR: submit with --array=1-300 (or a sub-range)"
+    echo "ERROR: submit with --array=1-330 (or a sub-range)"
     exit 1
 fi
 
@@ -59,12 +59,12 @@ REPO_ROOT="$SUBMIT_DIR"
 
 # ── Matrix ────────────────────────────────────────────────────────────────
 TYPES=(pref corr demo seq_estop scalar credit_assignment)
-BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000 40000)
+BUDGETS=(50 100 300 600 1000 2000 5000 10000 20000 40000 100000)
 SEEDS=(0 1 2 3 4)
 
 ID=$(( SLURM_ARRAY_TASK_ID - 1 ))
-TYPE_IDX=$(( ID / 50 ))
-BUDGET_IDX=$(( (ID % 50) / 5 ))
+TYPE_IDX=$(( ID / 55 ))
+BUDGET_IDX=$(( (ID % 55) / 5 ))
 SEED_IDX=$(( ID % 5 ))
 
 FEEDBACK_TYPE="${TYPES[$TYPE_IDX]}"

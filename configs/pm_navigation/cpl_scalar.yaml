@@ -19,7 +19,7 @@
 alg: PointMassCPL
 alg_kwargs:
   alpha: 1.0
-  contrastive_bias: 0.75       # downweight counterfactuals (0 < bias ≤ 1)
+  contrastive_bias: 1.0        # downweight counterfactuals (0 < bias ≤ 1)
   bc_coeff: 0.0
   bc_steps: 0                  # no BC warmup
   advantage_npz: runs/pm_sac_oracle/advantage_vi_N100.npz

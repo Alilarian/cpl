@@ -25,7 +25,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 TYPES   = ["pref", "corr", "demo", "seq_estop", "scalar", "credit_assignment"]
-BUDGETS = [50, 100, 300, 600, 1_000, 2_000, 5_000, 10_000, 20_000]
+BUDGETS = [50, 100, 300, 600, 1_000, 2_000, 5_000, 10_000, 20_000, 40_000, 100_000]
 THRESHOLDS = [0.5, 0.7, 0.9]
 
 COLORS = {
@@ -157,9 +157,9 @@ def plot_a(agg, out_path):
         ax.fill_between(xs, los, his, color=COLORS[fb_type], alpha=0.15, zorder=2)
 
     ax.set_xscale("log")
-    ax.set_xlim(38, 25_000)
+    ax.set_xlim(38, 130_000)
     ax.set_xticks(BUDGETS)
-    ax.set_xticklabels([str(b) for b in BUDGETS], fontsize=7)
+    ax.set_xticklabels([str(b) for b in BUDGETS], fontsize=7, rotation=30, ha="right")
     ax.set_ylim(-0.02, 1.02)
     ax.set_xlabel("Budget  (n feedback pairs)", fontsize=10)
     ax.set_ylabel("Peak success rate", fontsize=10)

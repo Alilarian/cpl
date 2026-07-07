@@ -64,6 +64,8 @@
 
 set -euo pipefail
 
+mkdir -p "${SLURM_SUBMIT_DIR:-$PWD}/slurm/logs"
+
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     echo "ERROR: submit with --array=1-330 (or a sub-range)"
     exit 1

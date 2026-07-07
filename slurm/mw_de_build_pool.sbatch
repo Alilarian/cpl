@@ -38,6 +38,8 @@
 
 set -euo pipefail
 
+mkdir -p "${SLURM_SUBMIT_DIR:-$PWD}/slurm/logs"
+
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
 if [[ ! -f "${SUBMIT_DIR}/setup_shell.sh" ]]; then
     echo "ERROR: no setup_shell.sh in ${SUBMIT_DIR}"

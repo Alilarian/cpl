@@ -29,6 +29,7 @@
 # Usage:
 #   sbatch --array=1-330 \
 #          --account=<account> --partition=<partition> \
+#          [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #          slurm/mw_de_train.sbatch
 #
 #   # Smoke-test (pref only, 1 seed):
@@ -40,6 +41,11 @@
 #   sbatch --array=56-110 ...    # corr
 #   sbatch --array=111-165 ...   # demo
 #   sbatch --array=166-330 ...   # remaining
+#
+# Resource overrides (command-line flags override #SBATCH defaults below):
+#   --time=HH:MM:SS     default: 24:00:00
+#   --cpus-per-task=N   default: 4
+#   --mem=XG            default: 16G
 #
 # Optional env overrides:
 #   LABELS_DIR     default: /scratch/general/vast/u1472210/mw_de_labels

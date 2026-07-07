@@ -29,11 +29,17 @@
 # Usage:
 #   sbatch --array=1-6 \
 #          --account=<account> --partition=<partition> \
+#          [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #          slurm/mw_de_generate_labels.sbatch
 #
 #   # Single type (e.g. pref only):
 #   sbatch --array=1 --account=<account> --partition=<partition> \
 #          slurm/mw_de_generate_labels.sbatch
+#
+# Resource overrides (command-line flags override #SBATCH defaults below):
+#   --time=HH:MM:SS     default: 24:00:00
+#   --cpus-per-task=N   default: 4
+#   --mem=XG            default: 128G  (sized for credit_assignment; safe for all)
 #
 # Optional env overrides:
 #   ENV_NAME          default: mw_drawer-open-v2

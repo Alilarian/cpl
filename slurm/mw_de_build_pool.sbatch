@@ -9,7 +9,13 @@
 #
 # Usage:
 #   sbatch --account=<account> --partition=<partition> \
+#          [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #          slurm/mw_de_build_pool.sbatch
+#
+# Resource overrides (command-line flags override #SBATCH defaults below):
+#   --time=HH:MM:SS     default: 12:00:00
+#   --cpus-per-task=N   default: 4
+#   --mem=XG            default: 32G
 #
 # Optional env overrides (via --export or environment):
 #   ENV_NAME            default: mw_drawer-open-v2

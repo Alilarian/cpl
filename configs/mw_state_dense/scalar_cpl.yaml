@@ -1,7 +1,7 @@
 alg: DemoCPL
 alg_kwargs:
   alpha: 0.1
-  contrastive_bias: 0.5   # K=2: equivalent to biased pairwise BCE
+  contrastive_bias: 0.75   # K=2: equivalent to biased pairwise BCE
   bc_steps: 0             # no BC warmup
   bc_coeff: 0.0
 
@@ -31,6 +31,7 @@ dataset_kwargs:
   segment_length: null
   reward_scale: 1.0
   reward_shift: 0.0
+  capacity: null
 
 processor: null
 

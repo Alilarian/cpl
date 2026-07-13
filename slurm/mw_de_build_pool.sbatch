@@ -23,8 +23,8 @@
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/mw_de_pool
 #   CHECKPOINT_INTERVAL default: 10000   → uses all saved ckpts (every 10k)
 #   N_EPISODES          default: 20      episodes rolled out per checkpoint
-#   N_SEGMENTS          default: 4000    segments sampled per checkpoint
-#                                        → 41 ckpts × 4000 = ~164k segments total
+#   N_SEGMENTS          default: 7000    segments sampled per checkpoint
+#                                        → 23 ckpts × 7000 = ~161k segments total
 #                                          covers the 100k budget for all types
 #   SEGMENT_LENGTH      default: 50
 
@@ -52,7 +52,7 @@ ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-10000}"
 N_EPISODES="${N_EPISODES:-20}"
-N_SEGMENTS="${N_SEGMENTS:-4000}"
+N_SEGMENTS="${N_SEGMENTS:-7000}"
 SEGMENT_LENGTH="${SEGMENT_LENGTH:-50}"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"

@@ -78,5 +78,5 @@ python3 "${REPO_ROOT}/scripts/build_trajectory_pool.py" \
     --n-episodes-per-checkpoint "$N_EPISODES" \
     --n-segments-per-checkpoint "$N_SEGMENTS" \
     --segment-length            "$SEGMENT_LENGTH" \
-    --output-dir                "$OUTPU T_DIR" \
+    --output-dir                "$OUTPUT_DIR" \
     --device cpu

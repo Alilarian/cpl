@@ -33,8 +33,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm/logs/%x_%j.out
-#SBATCH --error=slurm/logs/%x_%j.err
+#SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%j.out
+#SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%j.err
 
 set -euo pipefail
 
@@ -78,5 +78,5 @@ python3 "${REPO_ROOT}/scripts/build_trajectory_pool.py" \
     --n-episodes-per-checkpoint "$N_EPISODES" \
     --n-segments-per-checkpoint "$N_SEGMENTS" \
     --segment-length            "$SEGMENT_LENGTH" \
-    --output-dir                "$OUTPUT_DIR" \
+    --output-dir                "$OUTPU T_DIR" \
     --device cpu

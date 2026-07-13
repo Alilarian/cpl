@@ -59,8 +59,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=24:00:00
-#SBATCH --output=slurm/logs/%x_%A_%a.out
-#SBATCH --error=slurm/logs/%x_%A_%a.err
+#SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
+#SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 
 set -euo pipefail
 

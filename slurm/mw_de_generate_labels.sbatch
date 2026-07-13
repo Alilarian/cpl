@@ -157,7 +157,7 @@ case "$FEEDBACK_TYPE" in
             --run-dir      "$ORACLE_DIR" \
             --rho          0.8 \
             --lam          2.0 \
-            --kappa        1.5 \
+            --kappa        1.4 \
             --horizon      10 \
             --mcmc-samples 32 \
             --output-dir   "$OUTPUT_DIR" \

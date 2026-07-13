@@ -19,7 +19,7 @@
 #
 # Optional env overrides (via --export or environment):
 #   ENV_NAME            default: mw_drawer-open-v2
-#   ORACLE_RUNS_BASE    default: /scratch/general/vast/u1472210/oracle_sac_all
+#   ORACLE_RUNS_BASE    default: runs/runs/chpc/oracle_sac_seeds  (relative to repo root)
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/mw_de_pool
 #   CHECKPOINT_INTERVAL default: 20000   → 41 checkpoints for drawer-open @ 820k
 #   N_EPISODES          default: 20      episodes rolled out per checkpoint
@@ -48,7 +48,7 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
-ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-/scratch/general/vast/u1472210/oracle_sac_all}"
+ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-20000}"
 N_EPISODES="${N_EPISODES:-20}"

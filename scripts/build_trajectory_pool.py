@@ -54,10 +54,12 @@ ENVS_ALL = [
 ]
 
 
-def get_checkpoint_paths(run_dir, checkpoint_interval):
-    """Return sorted list of (step, path) for model_<step>.pt at the given interval."""
-    checkpoints = []
-    for fname in os.listdir(run_dir):
+def _scan_checkpoints(search_dir, model_dir, checkpoint_interval):
+    """Find model_<step>.pt files in search_dir at the given interval.
+    Returns list of (step, ckpt_path, model_dir) tuples.
+    """
+    results = []
+    for fname in os.listdir(search_dir):
         if not fname.startswith("model_") or not fname.endswith(".pt"):
             continue
         try:
@@ -65,9 +67,31 @@ def get_checkpoint_paths(run_dir, checkpoint_interval):
         except ValueError:
             continue
         if step % checkpoint_interval == 0:
-            checkpoints.append((step, os.path.join(run_dir, fname)))
-    checkpoints.sort(key=lambda x: x[0])
-    return checkpoints
+            results.append((step, os.path.join(search_dir, fname), model_dir))
+    return results
+
+
+def get_checkpoint_paths(run_dir, checkpoint_interval):
+    """Return sorted list of (step, ckpt_path, model_dir) tuples.
+
+    Supports two layouts:
+      flat  : run_dir/model_<step>.pt          (model_dir = run_dir)
+      seeded: run_dir/seed-*/model_<step>.pt   (model_dir = seed subdir)
+    Seeded layout is detected when no model_*.pt files exist directly in run_dir.
+    """
+    flat = _scan_checkpoints(run_dir, run_dir, checkpoint_interval)
+    if flat:
+        return sorted(flat, key=lambda x: x[0])
+
+    checkpoints = []
+    seed_dirs = sorted(
+        e for e in os.listdir(run_dir)
+        if e.startswith("seed-") and os.path.isdir(os.path.join(run_dir, e))
+    )
+    for seed in seed_dirs:
+        seed_dir = os.path.join(run_dir, seed)
+        checkpoints.extend(_scan_checkpoints(seed_dir, seed_dir, checkpoint_interval))
+    return sorted(checkpoints, key=lambda x: x[0])
 
 
 def load_model(run_dir, checkpoint_path, device):
@@ -189,29 +213,31 @@ def save_npz(path, **arrays):
     os.replace(tmp_path, path)
 
 
-def build_pool_for_env(run_dir, checkpoints, n_episodes_per_checkpoint,
+def build_pool_for_env(checkpoints, n_episodes_per_checkpoint,
                        n_segments_per_checkpoint, segment_length, staging_dir, device):
     """
     Build the full pool for one environment across all checkpoints.
 
-    Saves each checkpoint's segments immediately to staging_dir/step_<N>.npz.
+    checkpoints: list of (step, ckpt_path, model_dir) from get_checkpoint_paths.
+    Saves each checkpoint's segments immediately to staging_dir/<seed>_step_<N>.npz.
     Already-saved checkpoints are skipped on resume.
     Returns concatenated arrays across all checkpoints.
     """
     os.makedirs(staging_dir, exist_ok=True)
 
-    for ckpt_idx, (step, ckpt_path) in enumerate(checkpoints):
-        stage_path = os.path.join(staging_dir, f"step_{step}.npz")
+    for ckpt_idx, (step, ckpt_path, model_dir) in enumerate(checkpoints):
+        seed_tag   = os.path.basename(model_dir)
+        stage_path = os.path.join(staging_dir, f"{seed_tag}_step_{step}.npz")
 
         if os.path.exists(stage_path):
-            print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] step={step:>7,}  "
+            print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] {seed_tag} step={step:>7,}  "
                   f"already done — skipping")
             continue
 
-        print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] step={step:>7,}  "
+        print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] {seed_tag} step={step:>7,}  "
               f"rolling out {n_episodes_per_checkpoint} eps ...", end="", flush=True)
 
-        model, env = load_model(run_dir, ckpt_path, device)
+        model, env = load_model(model_dir, ckpt_path, device)
         episodes   = rollout_episodes(model, env, n_episodes_per_checkpoint)
         segs       = sample_segments(episodes, n_segments_per_checkpoint, segment_length)
 
@@ -230,8 +256,9 @@ def build_pool_for_env(run_dir, checkpoints, n_episodes_per_checkpoint,
 
     # Merge all staging files in sorted order
     all_obs, all_action, all_reward, all_state, all_ckpt_step = [], [], [], [], []
-    for step, _ in checkpoints:
-        stage_path = os.path.join(staging_dir, f"step_{step}.npz")
+    for step, _, model_dir in checkpoints:
+        seed_tag   = os.path.basename(model_dir)
+        stage_path = os.path.join(staging_dir, f"{seed_tag}_step_{step}.npz")
         d = np.load(stage_path)
         all_obs.append(d["obs"])
         all_action.append(d["action"])
@@ -316,7 +343,7 @@ def main():
         print(f"{'='*65}")
 
         obs_arr, action_arr, reward_arr, state_arr, ckpt_arr = build_pool_for_env(
-            run_dir, checkpoints,
+            checkpoints,
             args.n_episodes_per_checkpoint,
             args.n_segments_per_checkpoint,
             args.segment_length,

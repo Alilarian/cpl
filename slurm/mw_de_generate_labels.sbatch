@@ -44,6 +44,7 @@
 # Optional env overrides:
 #   ENV_NAME          default: mw_drawer-open-v2
 #   ORACLE_RUNS_BASE  default: runs/runs/chpc/oracle_sac_seeds  (relative to repo root)
+#   ORACLE_SEED       default: seed-1  (subdirectory used as oracle for label scoring)
 #   POOL_DIR          default: /scratch/general/vast/u1472210/mw_de_pool
 #   OUTPUT_DIR        default: /scratch/general/vast/u1472210/mw_de_labels
 
@@ -73,6 +74,7 @@ REPO_ROOT="$SUBMIT_DIR"
 
 ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
+ORACLE_SEED="${ORACLE_SEED:-seed-1}"
 POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
 
@@ -81,7 +83,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
 [[ "$OUTPUT_DIR"       != /* ]] && OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
 
 POOL_PATH="${POOL_DIR}/${ENV_NAME}/pool.npz"
-ORACLE_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}"
+ORACLE_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}/${ORACLE_SEED}"
 
 TYPES=(pref corr demo seq_estop scalar credit_assignment)
 FEEDBACK_TYPE="${TYPES[$(( SLURM_ARRAY_TASK_ID - 1 ))]}"
@@ -91,6 +93,7 @@ echo "SLURM_JOB_ID    = ${SLURM_JOB_ID:-}"
 echo "ARRAY_TASK_ID   = ${SLURM_ARRAY_TASK_ID}"
 echo "FEEDBACK_TYPE   = ${FEEDBACK_TYPE}"
 echo "ENV_NAME        = ${ENV_NAME}"
+echo "ORACLE_SEED     = ${ORACLE_SEED}"
 echo "POOL_PATH       = ${POOL_PATH}"
 echo "ORACLE_DIR      = ${ORACLE_DIR}"
 echo "OUTPUT_DIR      = ${OUTPUT_DIR}"

@@ -1,6 +1,6 @@
 # Make sure we have the conda environment set up.
 CONDA_PATH=/uufs/chpc.utah.edu/sys/installdir/r8/miniconda3/25.9.1/miniconda3/bin/activate
-ENV_NAME=cpl
+CONDA_ENV_NAME=cpl
 REPO_PATH="${REPO_ROOT:-path/to/your/repo}"
 USE_MUJOCO_PY=true # For using mujoco py
 WANDB_API_KEY="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" # If you want to use wandb, set this to your API key.
@@ -11,10 +11,10 @@ WANDB_API_KEY="wandb_v1_KCRNbUQZwfxtcaga9MBJuMLda3P_0WGunw6O1PDURTkEN4Ff12SwQPE1
 # We must always source conda.sh explicitly before calling conda activate.
 if module load miniconda3 2>/dev/null; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate $ENV_NAME
+    conda activate $CONDA_ENV_NAME
 else
     source $CONDA_PATH
-    conda activate $ENV_NAME
+    conda activate $CONDA_ENV_NAME
 fi
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.

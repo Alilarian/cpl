@@ -42,7 +42,7 @@ schedule_kwargs:
     multiplier: 1.0
 
 trainer_kwargs:
-  total_steps: 500000     # same compute budget as demo_cpl for fair comparison
+  total_steps: 250000     # same compute budget as demo_cpl for fair comparison
   log_freq: 500
   profile_freq: 500
   eval_freq: 5000

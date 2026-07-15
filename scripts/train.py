@@ -15,18 +15,41 @@ def try_wandb_setup(path, config):
     # to whatever wandb already has stored (netrc / wandb login).
     api_key = os.getenv("WANDB_API_KEY") or wandb.api.api_key
     if not api_key:
+        print("[wandb] No API key found — skipping. Set WANDB_API_KEY or run `wandb login`.")
         return
 
     project_dir = os.path.dirname(os.path.dirname(__file__))
     project_name = os.getenv("WANDB_PROJECT", os.path.basename(project_dir))
     wandb_dir = os.path.join(os.path.dirname(project_dir), "wandb")
     os.makedirs(wandb_dir, exist_ok=True)
-    wandb.init(
+
+    # Resume an existing run if a run-ID was saved from a previous attempt.
+    # This keeps metrics continuous across walltime-limited restarts.
+    run_id_file = os.path.join(path, "wandb_run_id.txt")
+    run_id = None
+    if os.path.exists(run_id_file):
+        with open(run_id_file) as f:
+            run_id = f.read().strip() or None
+
+    # WANDB_RUN_NAME allows the sbatch to set a meaningful name that includes
+    # the env, type, budget, and seed (e.g. "mw_drawer-open-v2/pref_b000050_s0").
+    run_name = os.getenv("WANDB_RUN_NAME", os.path.basename(path))
+    group    = os.getenv("WANDB_GROUP", None)
+
+    run = wandb.init(
         project=project_name,
-        name=os.path.basename(path),
+        name=run_name,
+        group=group,
         config=config.flatten(separator="-"),
         dir=wandb_dir,
+        id=run_id,
+        resume="allow",
     )
+
+    # Persist the run ID so future restarts resume this exact run.
+    if run is not None:
+        with open(run_id_file, "w") as f:
+            f.write(run.id)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Phase 3: Train CPL for the MetaWorld data-efficiency sweep.
+# Phase 3: Train CPL for the MetaWorld data-efficiency sweep — all envs.
 #
-# Matrix: 6 feedback types × 11 budgets × 5 seeds = 330 tasks
+# Matrix per env: 6 feedback types × 11 budgets × 5 seeds = 330 tasks
 #
 #   Types  : pref  corr  demo  seq_estop  scalar  credit_assignment
 #   Budgets: 50  100  300  600  1000  2000  5000  10000  20000  40000  100000
@@ -12,7 +12,7 @@
 #   budget_idx = ((TASK_ID-1) % 55)/5  (0..10)
 #   seed_idx   = (TASK_ID - 1) % 5     (0..4)
 #
-# By-type ranges (useful for splitting across partitions):
+# By-type task ranges (useful for submitting one type at a time):
 #   pref                1–55
 #   corr               56–110
 #   demo              111–165
@@ -20,45 +20,49 @@
 #   scalar            221–275
 #   credit_assignment 276–330
 #
-# Budget clamping: if budget > available labels (corr/demo/credit max ~41k),
-#   the run trains on all available data rather than erroring.
+# Usage — all types, one env at a time:
+#   ENV_NAME=mw_drawer-open-v2   sbatch --array=1-330 --account=<acct> --partition=<part> slurm/mw_de_train.sbatch
+#   ENV_NAME=mw_bin-picking-v2   sbatch --array=1-330 --account=<acct> --partition=<part> slurm/mw_de_train.sbatch
+#   ENV_NAME=mw_button-press-v2  sbatch --array=1-330 --account=<acct> --partition=<part> slurm/mw_de_train.sbatch
+#   ENV_NAME=mw_door-open-v2     sbatch --array=1-330 --account=<acct> --partition=<part> slurm/mw_de_train.sbatch
+#   ENV_NAME=mw_plate-slide-v2   sbatch --array=1-330 --account=<acct> --partition=<part> slurm/mw_de_train.sbatch
 #
-# Outputs: ${RUNS_DIR}/<type>_b<budget:06d>_s<seed>/
-# WandB  : project=${WANDB_PROJECT}, run=<type>_b<budget:06d>_s<seed>
+# Usage — single feedback type across all envs:
+#   for ENV in mw_drawer-open-v2 mw_bin-picking-v2 mw_button-press-v2 mw_door-open-v2 mw_plate-slide-v2; do
+#     ENV_NAME=$ENV sbatch --array=1-55   --account=<acct> --partition=<part> slurm/mw_de_train.sbatch  # pref
+#     ENV_NAME=$ENV sbatch --array=56-110  ...   # corr
+#     ENV_NAME=$ENV sbatch --array=111-165 ...   # demo
+#     ENV_NAME=$ENV sbatch --array=166-220 ...   # seq_estop
+#     ENV_NAME=$ENV sbatch --array=221-275 ...   # scalar
+#     ENV_NAME=$ENV sbatch --array=276-330 ...   # credit_assignment
+#   done
 #
-# Usage:
-#   sbatch --array=1-330 \
-#          --account=<account> --partition=<partition> \
-#          [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
-#          slurm/mw_de_train.sbatch
+# Resume: if a job is killed by walltime, resubmit with the same command.
+#   The trainer auto-resumes from final_model.pt; wandb run continues via
+#   wandb_run_id.txt stored in the run directory.
+#   Completed runs (training_complete sentinel exists) are automatically skipped.
 #
-#   # Smoke-test (pref only, 1 seed):
-#   sbatch --array=1 --account=<account> --partition=<partition> \
-#          slurm/mw_de_train.sbatch
-#
-#   # By type:
-#   sbatch --array=1-55   ...    # pref
-#   sbatch --array=56-110 ...    # corr
-#   sbatch --array=111-165 ...   # demo
-#   sbatch --array=166-330 ...   # remaining
+# WandB setup (do once on CHPC before submitting):
+#   export WANDB_API_KEY=<your-key>          # or: wandb login
+#   echo "export WANDB_API_KEY=<your-key>" >> ~/.bashrc
 #
 # Resource overrides (command-line flags override #SBATCH defaults below):
-#   --time=HH:MM:SS     default: 24:00:00
+#   --time=HH:MM:SS     default: 48:00:00
 #   --cpus-per-task=N   default: 4
 #   --mem=XG            default: 16G
 #
 # Optional env overrides:
+#   ENV_NAME       default: mw_drawer-open-v2
 #   LABELS_DIR     default: /scratch/general/vast/u1472210/mw_de_labels
 #   RUNS_DIR       default: runs/mw_de_cb075
-#   ENV_NAME       default: mw_drawer-open-v2
 #   CONFIG_DIR     default: configs/mw_state_dense
-#   WANDB_PROJECT  default: mw-cpl-de-cb075
+#   WANDB_PROJECT  default: mw-cpl-de
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 
@@ -94,9 +98,9 @@ SEED="${SEEDS[$SEED_IDX]}"
 BUDGET_STR=$(printf "%06d" "$BUDGET")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
+ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 LABELS_DIR="${LABELS_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
 RUNS_DIR="${RUNS_DIR:-runs/mw_de_cb075}"
-ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
 
 [[ "$LABELS_DIR" != /* ]] && LABELS_DIR="${REPO_ROOT}/${LABELS_DIR}"
@@ -121,7 +125,9 @@ TYPE_LABEL_FILE[credit_assignment]=credit_labels.npz
 
 CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/${TYPE_CONFIG[$FEEDBACK_TYPE]}"
 LABELS_NPZ="${LABELS_DIR}/${ENV_NAME}/${TYPE_LABEL_FILE[$FEEDBACK_TYPE]}"
-RUN_PATH="${RUNS_DIR}/${FEEDBACK_TYPE}_b${BUDGET_STR}_s${SEED}"
+
+# ENV_NAME is part of the run path so runs for different envs never collide.
+RUN_PATH="${RUNS_DIR}/${ENV_NAME}/${FEEDBACK_TYPE}_b${BUDGET_STR}_s${SEED}"
 
 echo "=============================="
 echo "ARRAY_TASK_ID = ${SLURM_ARRAY_TASK_ID}"
@@ -134,9 +140,12 @@ echo "LABELS        = ${LABELS_NPZ}"
 echo "RUN_PATH      = ${RUN_PATH}"
 echo "=============================="
 
-# Skip if already trained
-if [[ -f "${RUN_PATH}/best_model.pt" ]]; then
-    echo "Already trained — skipping."
+# ── Skip if already completed ─────────────────────────────────────────────────
+# The sentinel file is written only after train.py exits successfully at 250k steps.
+# If a job was killed mid-training (no sentinel), the trainer resumes from
+# final_model.pt which is saved every eval_freq steps (every 5k steps).
+if [[ -f "${RUN_PATH}/training_complete" ]]; then
+    echo "Already completed (training_complete sentinel exists) — skipping."
     exit 0
 fi
 
@@ -152,7 +161,6 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 
 # ── Auto-clamp budget to actual dataset size ───────────────────────────────────
-# corr/demo/credit produce ~41k examples; budgets of 100k auto-clamp to all.
 N_AVAILABLE=$(python3 -c "import numpy as np; d=np.load('${LABELS_NPZ}'); print(d['obs'].shape[0])")
 if (( BUDGET > N_AVAILABLE )); then
     echo "NOTE: budget ${BUDGET} > available ${N_AVAILABLE} — using full dataset (capacity=null)."
@@ -164,13 +172,27 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
 
-export WANDB_PROJECT="${WANDB_PROJECT:-mw-cpl-de-cb075}"
+# ── WandB ─────────────────────────────────────────────────────────────────────
+# Project: mw-cpl-de  (set WANDB_PROJECT to override)
+# Run name: "<env>/<type>_b<budget>_s<seed>"  — unique across all envs
+# Group:    "<env>"                            — groups runs per env in the UI
+# Resume:   wandb_run_id.txt persists the run ID across walltime restarts
+export WANDB_PROJECT="${WANDB_PROJECT:-mw-cpl-de}"
+export WANDB_RUN_NAME="${ENV_NAME}/${FEEDBACK_TYPE}_b${BUDGET_STR}_s${SEED}"
+export WANDB_GROUP="${ENV_NAME}"
 
+# ── Train ─────────────────────────────────────────────────────────────────────
 python3 "${REPO_ROOT}/scripts/train.py" \
     --config  "$CONFIG_PATH" \
     --path    "$RUN_PATH"   \
     --seed    "$SEED"       \
     --device  cpu           \
-    --set "dataset_kwargs.path=${LABELS_NPZ}"            \
-    --set "dataset_kwargs.capacity=${EFFECTIVE_CAPACITY}" \
+    --set "eval_env=${ENV_NAME}"                                   \
+    --set "dataset_kwargs.path=${LABELS_NPZ}"                      \
+    --set "dataset_kwargs.capacity=${EFFECTIVE_CAPACITY}"          \
     --set "budget=${BUDGET}"
+
+# Write sentinel only on clean exit (250k steps reached).
+# A walltime kill (SIGTERM) prevents this, so the next resubmit resumes training.
+touch "${RUN_PATH}/training_complete"
+echo "Training complete — sentinel written to ${RUN_PATH}/training_complete"

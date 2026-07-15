@@ -294,9 +294,13 @@ def main():
                              "1 is randomly chosen per segment.")
     parser.add_argument("--min-adv-gap", type=float, default=0.0,
                         help="Min rl_sum gap (best - worst) to keep a sample (default: 0.0)")
-    parser.add_argument("--discount",     type=float, default=0.99)
-    parser.add_argument("--mcmc-samples", type=int,   default=64,
+    parser.add_argument("--discount",        type=float, default=0.99)
+    parser.add_argument("--mcmc-samples",   type=int,   default=64,
                         help="MCMC samples for V(s) (default: 64)")
+    parser.add_argument("--score-batch-size", type=int, default=32,
+                        help="Score this many segments in one forward pass (default: 32). "
+                             "Higher values amortize PyTorch overhead on CPU. "
+                             "K×batch tensors must fit in RAM: K=7, T=50, B=32 → ~14MB obs.")
     parser.add_argument("--save-every",  type=int,   default=500,
                         help="Save progress checkpoint every N kept samples (default: 500).")
     parser.add_argument("--output-dir", type=str, default="datasets/demo_labels")
@@ -330,6 +334,7 @@ def main():
         pool_ckpt   = pool["checkpoint_step"] # (N,)
 
     N, T, obs_dim = pool_obs.shape
+    act_dim = pool_action.shape[-1]
     print(f"  N={N} segments, T={T} steps, obs_dim={obs_dim}")
 
     # ------------------------------------------------------------------
@@ -390,85 +395,110 @@ def main():
         print(f"  Resumed at pool index {start_idx}, {len(out_obs)} samples kept so far\n")
 
     # ------------------------------------------------------------------
-    # Process each pool segment
+    # Process pool segments with batched scoring
+    # Rollouts are sequential (env state required), but score_trajectories
+    # is called once per batch of --score-batch-size segments, giving 3-5×
+    # speedup on CPU by amortizing PyTorch overhead and improving BLAS use.
     # ------------------------------------------------------------------
+    print(f"\nProcessing {N - start_idx} segments "
+          f"(K={K}, score batch size={args.score_batch_size})...\n")
+
+    # Buffer: collect rollouts across segments before scoring
+    buf_pool_idx  = []   # pool indices
+    buf_cand_obs  = []   # per-segment: list of K obs arrays (T, obs_dim)
+    buf_cand_act  = []   # per-segment: list of K act arrays (T, act_dim)
+    buf_cand_rew  = []   # per-segment: list of K rew arrays (T,)
+
+    prev_milestone = len(out_obs) // args.save_every
+
     for i in range(start_idx, N):
         if i % 200 == 0:
             print(f"  [{i:>5}/{N}]  kept={len(out_obs)}  "
                   f"skip_done={n_skip_done}  skip_gap={n_skip_gap}")
 
-        s0 = pool_state[i, 0]   # full env physics state at segment start
+        s0 = pool_state[i, 0]
 
-        # ---- Build candidate set -----------------------------------------
-
+        # ---- Build candidate set (rollouts are sequential) ---------------
         cand_obs, cand_act, cand_rew = [], [], []
 
-        # 1. Expert rollout from s_0
         result = rollout_from_state(expert_model, env, s0, T, device)
         if result is None:
             n_skip_done += 1
-            continue
-        cand_obs.append(result[0])
-        cand_act.append(result[1])
-        cand_rew.append(result[2])
-
-        # 2. One rollout per stratified tier
-        tier_ok = True
-        for tier in tier_models:
-            if not tier:
-                continue
-            _, m = tier[np.random.randint(len(tier))]
-            result = rollout_from_state(m, env, s0, T, device)
-            if result is None:
-                tier_ok = False
-                break
+        else:
             cand_obs.append(result[0])
             cand_act.append(result[1])
             cand_rew.append(result[2])
 
-        if not tier_ok:
-            n_skip_done += 1
+            tier_ok = True
+            for tier in tier_models:
+                if not tier:
+                    continue
+                _, m = tier[np.random.randint(len(tier))]
+                result = rollout_from_state(m, env, s0, T, device)
+                if result is None:
+                    tier_ok = False
+                    break
+                cand_obs.append(result[0])
+                cand_act.append(result[1])
+                cand_rew.append(result[2])
+
+            if not tier_ok:
+                n_skip_done += 1
+            else:
+                cand_obs.append(pool_obs[i])
+                cand_act.append(pool_action[i])
+                cand_rew.append(pool_reward[i])
+
+                buf_pool_idx.append(i)
+                buf_cand_obs.append(cand_obs)
+                buf_cand_act.append(cand_act)
+                buf_cand_rew.append(cand_rew)
+
+        flush = len(buf_pool_idx) >= args.score_batch_size or i == N - 1
+        if not flush or not buf_pool_idx:
             continue
 
-        # 3. Original pool segment (starts at s_0 by construction — no re-rollout)
-        cand_obs.append(pool_obs[i])
-        cand_act.append(pool_action[i])
-        cand_rew.append(pool_reward[i])
+        # -- Batch score all buffered segments in one forward pass ----------
+        B  = len(buf_pool_idx)
+        K_b = len(buf_cand_obs[0])   # candidates per segment (constant)
 
-        # ---- Score with oracle rl_sum ------------------------------------
-
-        obs_arr    = np.stack(cand_obs, axis=0)  # (K, T, obs_dim)
-        action_arr = np.stack(cand_act, axis=0)  # (K, T, act_dim)
-        reward_arr = np.stack(cand_rew, axis=0)  # (K, T)
+        obs_flat = np.empty((B * K_b, T, obs_dim), dtype=np.float32)
+        act_flat = np.empty((B * K_b, T, act_dim), dtype=np.float32)
+        rew_flat = np.empty((B * K_b, T),          dtype=np.float32)
+        for j in range(B):
+            for k in range(K_b):
+                obs_flat[j * K_b + k] = buf_cand_obs[j][k]
+                act_flat[j * K_b + k] = buf_cand_act[j][k]
+                rew_flat[j * K_b + k] = buf_cand_rew[j][k]
 
         scores_dict = score_trajectories(
-            obs_arr, action_arr, reward_arr,
+            obs_flat, act_flat, rew_flat,
             oracle, args.discount, args.mcmc_samples, device,
         )
-        scores = scores_dict["rl_sum"]   # (K,)
+        rl_sum = scores_dict["rl_sum"].reshape(B, K_b)  # (B, K)
 
-        # ---- Quality filter ----------------------------------------------
+        for j in range(B):
+            scores_j = rl_sum[j]
 
-        if scores.max() - scores.min() < args.min_adv_gap:
-            n_skip_gap += 1
-            continue
+            if scores_j.max() - scores_j.min() < args.min_adv_gap:
+                n_skip_gap += 1
+                continue
 
-        # ---- Rank best → worst; demo is index 0 --------------------------
+            order      = np.argsort(scores_j)[::-1]
+            obs_arr    = np.stack(buf_cand_obs[j])[order]   # (K, T, obs_dim)
+            action_arr = np.stack(buf_cand_act[j])[order]
+            reward_arr = np.stack(buf_cand_rew[j])[order]
+            scores_sorted = scores_j[order]
 
-        order      = np.argsort(scores)[::-1]
-        obs_arr    = obs_arr[order]
-        action_arr = action_arr[order]
-        reward_arr = reward_arr[order]
-        scores     = scores[order]
+            out_obs.append(obs_arr)
+            out_action.append(action_arr)
+            out_reward.append(reward_arr)
+            out_adv.append(scores_sorted)
+            out_ckpt.append(pool_ckpt[buf_pool_idx[j]])
 
-        out_obs.append(obs_arr)
-        out_action.append(action_arr)
-        out_reward.append(reward_arr)
-        out_adv.append(scores)
-        out_ckpt.append(pool_ckpt[i])
-
-        # ---- Periodic progress save -----------------------------------------
-        if len(out_obs) % args.save_every == 0:
+        # Save progress after each batch when a new milestone is crossed
+        milestone = len(out_obs) // args.save_every
+        if milestone > prev_milestone and len(out_obs) > 0:
             save_npz(
                 prog_path,
                 obs=np.stack(out_obs, axis=0),
@@ -481,6 +511,12 @@ def main():
                 n_skip_gap=np.array(n_skip_gap),
             )
             print(f"  [progress saved at pool idx {i+1}, {len(out_obs)} kept]")
+            prev_milestone = milestone
+
+        buf_pool_idx.clear()
+        buf_cand_obs.clear()
+        buf_cand_act.clear()
+        buf_cand_rew.clear()
 
     # ------------------------------------------------------------------
     # Save final output

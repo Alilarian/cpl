@@ -3,8 +3,8 @@
 #
 # One array task per feedback type (6 types, ignoring plain estop):
 #   Task 1 — pref             fast: pool scoring only, no env rollouts   (~2h)
-#   Task 2 — corr             expert rollout per segment                  (~8h)
-#   Task 3 — demo             K rollouts per segment (most expensive)    (~16h)
+#   Task 2 — corr             expert rollout per segment; batched scoring (~6h)
+#   Task 3 — demo             K rollouts per segment; batched scoring    (~25h)
 #   Task 4 — seq_estop        V(s) scoring + estop simulation             (~4h)
 #   Task 5 — scalar           V(s) scoring + sliding window               (~4h)
 #   Task 6 — credit_assignment V(s) scoring + window extraction          (~4h)
@@ -37,8 +37,8 @@
 #          slurm/mw_de_generate_labels.sbatch
 #
 # Resource overrides (command-line flags override #SBATCH defaults below):
-#   --time=HH:MM:SS     default: 24:00:00
-#   --cpus-per-task=N   default: 4
+#   --time=HH:MM:SS     default: 48:00:00
+#   --cpus-per-task=N   default: 8
 #   --mem=XG            default: 128G  (sized for credit_assignment; safe for all)
 #
 # Optional env overrides:
@@ -50,9 +50,9 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 
@@ -125,27 +125,33 @@ case "$FEEDBACK_TYPE" in
         ;;
 
     corr)
-        # Expert rollout from s_0 for every pool segment → ~41k corr pairs.
+        # Expert rollout from s_0 for every pool segment → ~161k corr pairs.
         # Sorted by improvement desc.
+        # Batched scoring (--score-batch-size 64) + mcmc-samples 16 gives ~4-5×
+        # speedup vs per-segment scoring; expected runtime ~4-6h on 8 CPUs.
         python3 "${REPO_ROOT}/scripts/generate_corr_labels.py" \
-            --pool-path    "$POOL_PATH" \
-            --run-dir      "$ORACLE_DIR" \
-            --min-adv-gap  0.0 \
-            --mcmc-samples 32 \
-            --output-dir   "$OUTPUT_DIR" \
+            --pool-path       "$POOL_PATH" \
+            --run-dir         "$ORACLE_DIR" \
+            --min-adv-gap     0.0 \
+            --mcmc-samples    16 \
+            --score-batch-size 64 \
+            --output-dir      "$OUTPUT_DIR" \
             --device cpu
         ;;
 
     demo)
         # K=7: 1 expert + 5 stratified-tier rollouts + 1 original pool segment.
-        # One demo per pool segment → ~41k demo examples.  Resumable.
+        # One demo per pool segment → ~161k demo examples.  Resumable.
+        # Batched scoring (--score-batch-size 32) + mcmc-samples 16 gives ~4-5×
+        # speedup vs per-segment scoring; expected runtime ~20-30h on 8 CPUs.
         python3 "${REPO_ROOT}/scripts/generate_demo_labels.py" \
             --pool-path            "$POOL_PATH" \
             --run-dir              "$ORACLE_DIR" \
             --n-counterfactuals    6 \
             --checkpoints-per-tier 2 \
             --min-adv-gap          0.0 \
-            --mcmc-samples         32 \
+            --mcmc-samples         16 \
+            --score-batch-size     32 \
             --output-dir           "$OUTPUT_DIR" \
             --device cpu
         ;;

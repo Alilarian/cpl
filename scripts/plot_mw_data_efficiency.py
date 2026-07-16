@@ -286,38 +286,46 @@ def plot_b(peaks, env_name, out_path, thresholds=THRESHOLDS):
     plt.close(fig)
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--runs-dir", default="runs/mw_de",
-                        help="Directory containing <type>_b<budget>_s<seed>/ runs")
-    parser.add_argument("--env", default="mw_drawer-open-v2",
-                        help="Environment name (for plot title only)")
-    parser.add_argument("--out", default=None,
-                        help="Output PDF path (default: results/mw_de_<env>.pdf)")
-    parser.add_argument("--smooth", type=int, default=3,
-                        help="Rolling-window half-width for peak smoothing (default 3)")
-    args = parser.parse_args()
+def _detect_envs(runs_dir):
+    """
+    Auto-detect environment layout under runs_dir.
 
-    runs_dir = args.runs_dir
-    if not os.path.isabs(runs_dir):
-        runs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), runs_dir)
+    Two layouts are supported:
+      Flat  : runs_dir/<type>_b<budget>_s<seed>/   → one env (use --env name)
+      Nested: runs_dir/<env_name>/<type>_b<budget>_s<seed>/
 
-    env_slug = args.env.replace("/", "_")
-    out_a = args.out or os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "results", f"mw_de_{env_slug}.pdf"
+    Returns list of (env_name, effective_runs_dir) pairs.
+    """
+    if not os.path.isdir(runs_dir):
+        return []
+
+    # Nested: look for mw_* subdirs that themselves contain run dirs
+    env_dirs = sorted(
+        d for d in os.listdir(runs_dir)
+        if d.startswith("mw_") and os.path.isdir(os.path.join(runs_dir, d))
     )
+    if env_dirs:
+        return [(e, os.path.join(runs_dir, e)) for e in env_dirs]
 
-    print(f"Loading runs from {runs_dir} …")
-    data = load_runs(runs_dir)
+    # Flat: the runs_dir itself contains <type>_b<budget>_s<seed>/ dirs
+    return [("mw_drawer-open-v2", runs_dir)]   # default env label for flat layout
+
+
+def _plot_env(env_name, env_runs_dir, out_dir, smooth):
+    print(f"\n{'='*60}")
+    print(f"Env: {env_name}  ({env_runs_dir})")
+    print("="*60)
+
+    data = load_runs(env_runs_dir)
     print(f"\n{len(data)} runs loaded.")
 
     if not data:
-        print("No runs found — nothing to plot.")
+        print("No runs with log.csv — skipping.")
         return
 
-    peaks = compute_peaks(data, args.smooth)
+    peaks = compute_peaks(data, smooth)
     agg   = aggregate(peaks)
 
     print(f"\n{'Type':<20}  {'Budget':>7}  {'n':>2}  {'mean':>6}  {'lo':>6}  {'hi':>6}")
@@ -330,11 +338,54 @@ def main():
             print(f"{fb_type:<20}  {budget:>7}  {d['n']:>2}  "
                   f"{d['mean']:>6.3f}  {d['lo']:>6.3f}  {d['hi']:>6.3f}")
 
-    plot_a(agg, args.env, out_a)
+    slug  = env_name.replace("/", "_")
+    out_a = os.path.join(out_dir, f"mw_de_{slug}.pdf")
+    out_b = os.path.join(out_dir, f"mw_de_{slug}_b.pdf")
+    plot_a(agg, env_name, out_a)
+    plot_b(peaks, env_name, out_b)
 
-    stem, ext = os.path.splitext(out_a)
-    out_b = stem + "_b" + ext
-    plot_b(peaks, args.env, out_b)
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runs-dir", default="runs/mw_de_cb075",
+                        help="Root runs directory. Supports two layouts:\n"
+                             "  Flat  : <runs-dir>/<type>_b<budget>_s<seed>/  (single env)\n"
+                             "  Nested: <runs-dir>/<env>/<type>_b<budget>_s<seed>/  (multi-env)\n"
+                             "Multi-env layout is auto-detected from mw_* subdirectories.")
+    parser.add_argument("--env", default=None,
+                        help="Override env name label for flat layout "
+                             "(default: mw_drawer-open-v2). Ignored in nested layout.")
+    parser.add_argument("--out", default=None,
+                        help="Output directory for PDFs (default: results/). "
+                             "Ignored when --runs-dir is given explicitly with nested layout.")
+    parser.add_argument("--smooth", type=int, default=3,
+                        help="Rolling-window half-width for peak smoothing (default 3)")
+    args = parser.parse_args()
+
+    repo_root = os.path.dirname(os.path.dirname(__file__))
+
+    runs_dir = args.runs_dir
+    if not os.path.isabs(runs_dir):
+        runs_dir = os.path.join(repo_root, runs_dir)
+
+    out_dir = args.out or os.path.join(repo_root, "results")
+    os.makedirs(out_dir, exist_ok=True)
+
+    envs = _detect_envs(runs_dir)
+    if not envs:
+        print(f"No runs found under {runs_dir}")
+        return
+
+    # Allow --env override for flat layout
+    if len(envs) == 1 and args.env:
+        envs = [(args.env, envs[0][1])]
+
+    print(f"Found {len(envs)} environment(s): {[e for e, _ in envs]}")
+
+    for env_name, env_runs_dir in envs:
+        _plot_env(env_name, env_runs_dir, out_dir, args.smooth)
 
 
 if __name__ == "__main__":

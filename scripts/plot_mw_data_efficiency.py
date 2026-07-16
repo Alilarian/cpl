@@ -79,9 +79,11 @@ def load_runs(runs_dir):
 
         rows = np.genfromtxt(log_path, delimiter=",", names=True, invalid_raise=False)
 
-        # MetaWorld logs success as eval/succ (with slash → numpy replaces with /)
+        # MetaWorld logs success under various names depending on env/logger version.
+        # numpy genfromtxt strips '/' from header names (eval/success → evalsuccess).
         succ_col = None
-        for candidate in ("evalsucc", "eval/succ", "eval_succ", "success"):
+        for candidate in ("evalsuccess", "evalsucc", "eval/success", "eval/succ",
+                           "eval_success", "eval_succ", "success"):
             if candidate in rows.dtype.names:
                 succ_col = candidate
                 break

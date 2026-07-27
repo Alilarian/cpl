@@ -52,11 +52,13 @@
 #   --mem=XG            default: 16G
 #
 # Optional env overrides:
-#   ENV_NAME       default: mw_drawer-open-v2
-#   LABELS_DIR     default: /scratch/general/vast/u1472210/mw_de_labels
-#   RUNS_DIR       default: runs/mw_de_cb075
-#   CONFIG_DIR     default: configs/mw_state_dense
-#   WANDB_PROJECT  default: mw-cpl-de
+#   ENV_NAME           default: mw_drawer-open-v2
+#   LABELS_DIR         default: /scratch/general/vast/u1472210/mw_de_labels
+#   RUNS_DIR           default: runs/mw_de_cb075
+#   CONFIG_DIR         default: configs/mw_state_dense
+#   WANDB_PROJECT      default: mw-cpl-de
+#   CONTRASTIVE_BIAS   override alg_kwargs.contrastive_bias (e.g. 0.5)
+#   TOTAL_STEPS        override trainer_kwargs.total_steps  (e.g. 500000)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -172,6 +174,11 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
 
+# ── Optional per-run overrides ────────────────────────────────────────────────
+EXTRA_SETS=()
+[[ -n "${CONTRASTIVE_BIAS:-}" ]] && EXTRA_SETS+=(--set "alg_kwargs.contrastive_bias=${CONTRASTIVE_BIAS}")
+[[ -n "${TOTAL_STEPS:-}" ]]      && EXTRA_SETS+=(--set "trainer_kwargs.total_steps=${TOTAL_STEPS}")
+
 # ── WandB ─────────────────────────────────────────────────────────────────────
 # Project: mw-cpl-de  (set WANDB_PROJECT to override)
 # Run name: "<env>/<type>_b<budget>_s<seed>"  — unique across all envs
@@ -190,9 +197,10 @@ python3 "${REPO_ROOT}/scripts/train.py" \
     --set "eval_env=${ENV_NAME}"                                   \
     --set "dataset_kwargs.path=${LABELS_NPZ}"                      \
     --set "dataset_kwargs.capacity=${EFFECTIVE_CAPACITY}"          \
-    --set "budget=${BUDGET}"
+    --set "budget=${BUDGET}"                                       \
+    "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}"
 
-# Write sentinel only on clean exit (250k steps reached).
+# Write sentinel only on clean exit (all steps reached).
 # A walltime kill (SIGTERM) prevents this, so the next resubmit resumes training.
 touch "${RUN_PATH}/training_complete"
 echo "Training complete — sentinel written to ${RUN_PATH}/training_complete"

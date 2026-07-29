@@ -118,7 +118,13 @@ def main():
     print(f"  N_out = {N_out:,}")
 
     print(f"Saving to {out_path} ...")
-    np.savez_compressed(out_path, **result)
+    if args.type == "credit_assignment":
+        # Save uncompressed so PMCreditAssignmentBuffer can mmap and slice
+        # [:capacity] without loading the full array — keeps training RAM at
+        # O(capacity) instead of O(N).  File will be ~14-18 GB on disk.
+        np.savez(out_path, **result)
+    else:
+        np.savez_compressed(out_path, **result)
     out_mb = os.path.getsize(out_path) / 1e6
     print(f"Done — {out_mb:.0f} MB written.")
     print()

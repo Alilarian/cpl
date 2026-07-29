@@ -117,17 +117,23 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
         capacity: int = None,
         action_eps: float = 1e-5,
     ):
-        data = np.load(path)
-        obs        = data["obs"].astype(np.float32)          # (N, C, k, obs_dim)
-        action     = data["action"].astype(np.float32)       # (N, C, k, act_dim)
-        chosen_idx = data["chosen_idx"].astype(np.int64)     # (N,)
+        # Use mmap_mode='r' so numpy memory-maps individual arrays (works for
+        # uncompressed .npz only).  When capacity is set this lets us read only
+        # the first `capacity` rows without decompressing the full file first,
+        # keeping peak RAM at O(capacity) instead of O(N).
+        try:
+            data = np.load(path, mmap_mode='r')
+            _ = data["obs"].shape   # probe — triggers error if compressed
+        except ValueError:
+            data = np.load(path)    # fallback: compressed npz, load fully
 
-        N = obs.shape[0]
-        if capacity is not None and N > capacity:
-            obs        = obs[:capacity]
-            action     = action[:capacity]
-            chosen_idx = chosen_idx[:capacity]
-            N = capacity
+        N = data["obs"].shape[0]
+        cap = min(capacity, N) if capacity is not None else N
+
+        obs        = np.array(data["obs"][:cap],        dtype=np.float32)
+        action     = np.array(data["action"][:cap],     dtype=np.float32)
+        chosen_idx = np.array(data["chosen_idx"][:cap], dtype=np.int64)
+        N = cap
 
         lim    = 1.0 - action_eps
         action = np.clip(action, -lim, lim)

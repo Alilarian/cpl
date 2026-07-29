@@ -163,7 +163,24 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 fi
 
 # ── Auto-clamp budget to actual dataset size ───────────────────────────────────
-N_AVAILABLE=$(python3 -c "import numpy as np; d=np.load('${LABELS_NPZ}'); print(d['obs'].shape[0])")
+# Use mmap_mode='r' for uncompressed npz (e.g. preprocessed credit labels — up
+# to 18 GB uncompressed); fall back to reading just the .npy header via zipfile
+# for compressed npz.  Either way we read a few KB, not the full array.
+N_AVAILABLE=$(python3 - <<'PYEOF'
+import sys, numpy as np, zipfile, io
+path = "${LABELS_NPZ}"
+try:
+    d = np.load(path, mmap_mode='r')
+    print(d['obs'].shape[0])
+except Exception:
+    with zipfile.ZipFile(path) as z:
+        with z.open('obs.npy') as f:
+            buf = io.BytesIO(f.read(512))
+            np.lib.format.read_magic(buf)
+            shape, _, _ = np.lib.format.read_array_header_1_0(buf)
+            print(shape[0])
+PYEOF
+)
 if (( BUDGET > N_AVAILABLE )); then
     echo "NOTE: budget ${BUDGET} > available ${N_AVAILABLE} — using full dataset (capacity=null)."
     EFFECTIVE_CAPACITY="null"

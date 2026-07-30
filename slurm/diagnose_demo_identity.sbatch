@@ -19,13 +19,11 @@
 #
 # Usage:
 #   # Single env:
-#   sbatch --account=<account> --partition=<partition> \
-#          --export=ENV_NAME=mw_plate-slide-v2 \
+#   sbatch --export=ENV_NAME=mw_plate-slide-v2 \
 #          slurm/diagnose_demo_identity.sbatch
 #
 #   # Array over the 5 MW envs:
-#   sbatch --array=1-5 --account=<account> --partition=<partition> \
-#          slurm/diagnose_demo_identity.sbatch
+#   sbatch --array=1-5 slurm/diagnose_demo_identity.sbatch
 #
 # Optional env overrides:
 #   ENV_NAME          default: mw_drawer-open-v2 (ignored if SLURM_ARRAY_TASK_ID set)
@@ -42,6 +40,9 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
+#SBATCH --partition=soc-gpu-class-grn
+#SBATCH --qos=soc-gpu-students-grn
+#SBATCH --account=dbrown
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 

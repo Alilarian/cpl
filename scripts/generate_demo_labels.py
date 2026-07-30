@@ -8,9 +8,13 @@ For each segment in pool.npz:
   4. Include the original pool segment as a candidate              → 1 candidate
      (already starts at s_0, no extra rollout needed)
   5. Score all candidates with oracle rl_sum = Σ r_t + V(s_T) - V(s_0)
-  6. τ_D  = argmax rl_sum  → placed at output index 0
-     τ_1..K-1 = remaining candidates sorted descending
-  7. Quality filter: skip if rl_sum(τ_D) - rl_sum(τ_worst) < --min-adv-gap
+  6. τ_D  = expert rollout, ALWAYS placed at output index 0 (not argmax — the
+     expert is never outranked by a counterfactual, so "demo" always means the
+     expert's own behavior).
+     τ_1..K-1 = remaining (tier + original) candidates sorted descending
+  7. Quality filter: skip if rl_sum(τ_D) - rl_sum(best counterfactual) < --min-adv-gap
+     (i.e. the expert must clearly beat its closest competitor, not just the worst
+     candidate — this is a confidence filter on the expert's own margin.)
 
 Total candidates K = 1 (expert) + n_tiers + 1 (original)
                    = --n-counterfactuals + 1
@@ -30,10 +34,12 @@ Resumable: progress is saved every --save-every segments to
   The final output replaces the progress file once all segments are processed.
 
 Output (--output-dir/<env>/demo_labels_K<K>.npz):
-    obs              : (N, K, T, obs_dim)   index 0 = demo, 1..K-1 = counterfactuals
+    obs              : (N, K, T, obs_dim)   index 0 = expert (demo), 1..K-1 = counterfactuals
+                       sorted descending by rl_sum
     action           : (N, K, T, act_dim)
     reward           : (N, K, T)
-    adv_scores       : (N, K)               rl_sum values, sorted descending
+    adv_scores       : (N, K)               rl_sum values; adv_scores[:,0] is the expert's own
+                       score, NOT necessarily the max of the row (see point 6 above)
     checkpoint_step  : (N,)                 source checkpoint of original pool segment
 
 Usage:
@@ -293,7 +299,10 @@ def main():
                         help="Candidate checkpoints pre-loaded per tier (default: 2). "
                              "1 is randomly chosen per segment.")
     parser.add_argument("--min-adv-gap", type=float, default=0.0,
-                        help="Min rl_sum gap (best - worst) to keep a sample (default: 0.0)")
+                        help="Min rl_sum gap (expert - best counterfactual) to keep a sample "
+                             "(default: 0.0). Filters out segments where the expert doesn't "
+                             "clearly beat its closest competitor, i.e. a confidence filter on "
+                             "the expert's own margin, not the full K-way spread.")
     parser.add_argument("--discount",        type=float, default=0.99)
     parser.add_argument("--mcmc-samples",   type=int,   default=64,
                         help="MCMC samples for V(s) (default: 64)")
@@ -303,6 +312,11 @@ def main():
                              "K×batch tensors must fit in RAM: K=7, T=50, B=32 → ~14MB obs.")
     parser.add_argument("--save-every",  type=int,   default=500,
                         help="Save progress checkpoint every N kept samples (default: 500).")
+    parser.add_argument("--max-segments", type=int, default=None,
+                        help="Process only the first N pool segments (default: all). "
+                             "For quick sanity checks before a full run — output is written to "
+                             "demo_labels_K<K>_sanity<N>.npz instead of demo_labels_K<K>.npz "
+                             "so it never collides with (or gets skipped due to) a real output.")
     parser.add_argument("--output-dir", type=str, default="datasets/demo_labels")
     parser.add_argument("--device",     type=str, default="auto")
     args = parser.parse_args()
@@ -337,6 +351,12 @@ def main():
     act_dim = pool_action.shape[-1]
     print(f"  N={N} segments, T={T} steps, obs_dim={obs_dim}")
 
+    if args.max_segments is not None:
+        N = min(N, args.max_segments)
+        pool_obs, pool_action = pool_obs[:N], pool_action[:N]
+        pool_reward, pool_state, pool_ckpt = pool_reward[:N], pool_state[:N], pool_ckpt[:N]
+        print(f"  --max-segments set: truncated to N={N} segments (sanity-check run)")
+
     # ------------------------------------------------------------------
     # Load expert (also used as oracle for scoring)
     # ------------------------------------------------------------------
@@ -367,8 +387,9 @@ def main():
     env_name    = os.path.basename(os.path.dirname(args.pool_path))
     out_dir     = os.path.join(args.output_dir, env_name)
     os.makedirs(out_dir, exist_ok=True)
-    out_path    = os.path.join(out_dir, f"demo_labels_K{K}.npz")
-    prog_path   = os.path.join(out_dir, f"demo_labels_K{K}_progress.npz")
+    suffix      = f"_sanity{args.max_segments}" if args.max_segments is not None else ""
+    out_path    = os.path.join(out_dir, f"demo_labels_K{K}{suffix}.npz")
+    prog_path   = os.path.join(out_dir, f"demo_labels_K{K}{suffix}_progress.npz")
 
     if os.path.exists(out_path):
         print(f"Output already exists: {out_path}")
@@ -480,11 +501,21 @@ def main():
         for j in range(B):
             scores_j = rl_sum[j]
 
-            if scores_j.max() - scores_j.min() < args.min_adv_gap:
+            # Candidate 0 is always the expert rollout (see candidate-buffer
+            # construction above: expert is appended before tiers/original).
+            # Pin it at output index 0 unconditionally — "demo" must always mean
+            # the expert's own behavior, never a counterfactual that happened to
+            # score higher. Only the counterfactuals (indices 1..K-1) are sorted
+            # among themselves.
+            expert_score   = scores_j[0]
+            other_scores   = scores_j[1:]
+            best_cf_score  = other_scores.max()
+
+            if expert_score - best_cf_score < args.min_adv_gap:
                 n_skip_gap += 1
                 continue
 
-            order      = np.argsort(scores_j)[::-1]
+            order      = np.concatenate(([0], np.argsort(other_scores)[::-1] + 1))
             obs_arr    = np.stack(buf_cand_obs[j])[order]   # (K, T, obs_dim)
             action_arr = np.stack(buf_cand_act[j])[order]
             reward_arr = np.stack(buf_cand_rew[j])[order]
@@ -540,10 +571,11 @@ def main():
     ckpt_out   = np.array(out_ckpt, dtype=np.int64)
 
     print(f"\nOutput shapes:")
-    print(f"  obs    : {obs_out.shape}  (K dim: 0=demo, 1..{K-1}=counterfactuals)")
+    print(f"  obs    : {obs_out.shape}  (K dim: 0=expert/demo, 1..{K-1}=counterfactuals desc.)")
     print(f"  action : {action_out.shape}")
     print(f"  reward : {reward_out.shape}")
-    print(f"  adv    : {adv_out.shape}  (rl_sum, descending)")
+    print(f"  adv    : {adv_out.shape}  (rl_sum; index 0 = expert's own score, "
+          f"1..{K-1} descending)")
 
     save_npz(
         out_path,

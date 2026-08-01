@@ -1,0 +1,6 @@
+slurm/manifests/oracle_sac_1m/configs/0001.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_bin-picking-v2/
+slurm/manifests/oracle_sac_1m/configs/0002.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_button-press-v2/
+slurm/manifests/oracle_sac_1m/configs/0003.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_door-open-v2/
+slurm/manifests/oracle_sac_1m/configs/0004.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_drawer-open-v2/
+slurm/manifests/oracle_sac_1m/configs/0005.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_plate-slide-v2/
+slurm/manifests/oracle_sac_1m/configs/0006.yaml	/scratch/general/vast/u1472210/oracle_sac_1m/mw_sweep-into-v2/

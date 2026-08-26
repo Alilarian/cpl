@@ -10,10 +10,21 @@ For each environment, iterates over checkpoints at --checkpoint-interval steps,
 rolls out --n-episodes-per-checkpoint episodes per checkpoint, randomly samples
 --n-segments-per-checkpoint segments of --segment-length from those episodes.
 
-Resumable: each checkpoint's segments are saved immediately to a staging directory
-(<out_dir>/<env>/ckpts/step_<N>.npz).  On re-run, already-saved checkpoints are
-skipped automatically.  When all checkpoints are done they are merged into pool.npz
-and the staging directory is removed.
+Resumable at two levels:
+  - Across checkpoints: each checkpoint's segments are saved to a staging
+    directory (<out_dir>/<env>/ckpts/<seed>_step_<N>.npz). Already-finished
+    checkpoints are skipped on re-run. Once all checkpoints are done they are
+    merged into pool.npz and the staging directory is removed.
+  - Within a checkpoint: segments are generated in batches of --save-every
+    (rolling out --n-episodes-per-checkpoint fresh episodes per batch), and
+    each batch is written to its own small file under
+    <out_dir>/<env>/ckpts/<seed>_step_<N>_batches/batch_<k>.npz — a true
+    append, not a rewrite of everything collected so far, so cost stays
+    linear even for a large --n-segments-per-checkpoint (e.g. 100k from a
+    single checkpoint). If the job is killed mid-way, re-running resumes from
+    the last completed batch instead of restarting that checkpoint. Batches
+    are merged into the checkpoint's staging file (and the batch dir removed)
+    once its target segment count is reached.
 
 Output per environment (--output-dir/<env>/pool.npz):
     obs             : (N, T, obs_dim)
@@ -227,21 +238,66 @@ def save_npz(path, **arrays):
     os.replace(tmp_path, path)
 
 
+def generate_checkpoint_segments(model, env, n_segments, segment_length,
+                                  episodes_per_batch, batch_dir, save_every):
+    """
+    Generate n_segments for one checkpoint in batches, appending each batch as
+    its own file under batch_dir instead of rewriting everything collected so
+    far — keeps per-save cost O(batch), not O(total-so-far).
+
+    Each batch rolls out `episodes_per_batch` fresh episodes and samples
+    min(save_every, remaining) segments from them. On resume, already-written
+    batch files are counted and generation continues from there.
+
+    Returns list of batch file paths, in order.
+    """
+    os.makedirs(batch_dir, exist_ok=True)
+
+    batch_paths = sorted(
+        (os.path.join(batch_dir, f) for f in os.listdir(batch_dir) if f.startswith("batch_")),
+        key=lambda p: int(os.path.basename(p)[len("batch_"):-len(".npz")]),
+    )
+    n_done = sum(np.load(p)["obs"].shape[0] for p in batch_paths)
+    if n_done > 0:
+        print(f"      resuming: {n_done}/{n_segments} segments already batched "
+              f"({len(batch_paths)} batch files)")
+
+    next_idx = len(batch_paths)
+    while n_done < n_segments:
+        batch_n = min(save_every, n_segments - n_done)
+        episodes = rollout_episodes(model, env, episodes_per_batch)
+        segs = sample_segments(episodes, batch_n, segment_length)
+
+        batch_path = os.path.join(batch_dir, f"batch_{next_idx:05d}.npz")
+        save_npz(batch_path, obs=segs["obs"], action=segs["action"],
+                 reward=segs["reward"], state=segs["state"])
+        batch_paths.append(batch_path)
+
+        n_done += batch_n
+        next_idx += 1
+        print(f"      [{n_done:>7,}/{n_segments:>7,} segments batched]")
+
+    return batch_paths
+
+
 def build_pool_for_env(checkpoints, n_episodes_per_checkpoint,
-                       n_segments_per_checkpoint, segment_length, staging_dir, device):
+                       n_segments_per_checkpoint, segment_length, staging_dir,
+                       device, save_every):
     """
     Build the full pool for one environment across all checkpoints.
 
     checkpoints: list of (step, ckpt_path, model_dir) from get_checkpoint_paths.
-    Saves each checkpoint's segments immediately to staging_dir/<seed>_step_<N>.npz.
-    Already-saved checkpoints are skipped on resume.
-    Returns concatenated arrays across all checkpoints.
+    Saves each checkpoint's segments immediately to staging_dir/<seed>_step_<N>.npz,
+    generated incrementally via generate_checkpoint_segments (see there for the
+    within-checkpoint resume mechanism). Already-finished checkpoints are
+    skipped on resume. Returns concatenated arrays across all checkpoints.
     """
     os.makedirs(staging_dir, exist_ok=True)
 
     for ckpt_idx, (step, ckpt_path, model_dir) in enumerate(checkpoints):
         seed_tag   = os.path.basename(model_dir)
         stage_path = os.path.join(staging_dir, f"{seed_tag}_step_{step}.npz")
+        batch_dir  = os.path.join(staging_dir, f"{seed_tag}_step_{step}_batches")
 
         if os.path.exists(stage_path):
             print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] {seed_tag} step={step:>7,}  "
@@ -249,24 +305,38 @@ def build_pool_for_env(checkpoints, n_episodes_per_checkpoint,
             continue
 
         print(f"  [{ckpt_idx+1:>2}/{len(checkpoints)}] {seed_tag} step={step:>7,}  "
-              f"rolling out {n_episodes_per_checkpoint} eps ...", end="", flush=True)
+              f"generating {n_segments_per_checkpoint} segments "
+              f"({n_episodes_per_checkpoint} eps/batch, save every {save_every}) ...")
 
         model, env = load_model(model_dir, ckpt_path, device)
-        episodes   = rollout_episodes(model, env, n_episodes_per_checkpoint)
-        segs       = sample_segments(episodes, n_segments_per_checkpoint, segment_length)
+        batch_paths = generate_checkpoint_segments(
+            model, env, n_segments_per_checkpoint, segment_length,
+            n_episodes_per_checkpoint, batch_dir, save_every,
+        )
 
-        n = segs["obs"].shape[0]
-        avg_reward = segs["reward"].sum(axis=1).mean()
+        obs_b, act_b, rew_b, state_b = [], [], [], []
+        for p in batch_paths:
+            d = np.load(p)
+            obs_b.append(d["obs"]); act_b.append(d["action"])
+            rew_b.append(d["reward"]); state_b.append(d["state"])
+        obs, action, reward, state = (
+            np.concatenate(obs_b, axis=0), np.concatenate(act_b, axis=0),
+            np.concatenate(rew_b, axis=0), np.concatenate(state_b, axis=0),
+        )
+
+        n = obs.shape[0]
+        avg_reward = reward.sum(axis=1).mean()
         print(f"  → {n} segments  avg_seg_reward={avg_reward:.2f}")
 
         save_npz(
             stage_path,
-            obs=segs["obs"],
-            action=segs["action"],
-            reward=segs["reward"],
-            state=segs["state"],
+            obs=obs,
+            action=action,
+            reward=reward,
+            state=state,
             checkpoint_step=np.full(n, step, dtype=np.int64),
         )
+        shutil.rmtree(batch_dir)
 
     # Merge all staging files in sorted order
     all_obs, all_action, all_reward, all_state, all_ckpt_step = [], [], [], [], []
@@ -324,6 +394,12 @@ def main():
         help="Fixed segment length in steps (default: 50).",
     )
     parser.add_argument(
+        "--save-every", type=int, default=10000,
+        help="Segments per batch within a checkpoint (default: 10000). Each batch is "
+             "written as its own file (append, not rewrite) so a walltime kill loses "
+             "at most one batch's worth of work — see generate_checkpoint_segments.",
+    )
+    parser.add_argument(
         "--output-dir", type=str, default="datasets/demo_pool",
         help="Root output directory (default: datasets/demo_pool).",
     )
@@ -377,6 +453,7 @@ def main():
             args.segment_length,
             staging_dir,
             device,
+            args.save_every,
         )
 
         N = obs_arr.shape[0]

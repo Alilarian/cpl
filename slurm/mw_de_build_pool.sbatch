@@ -31,6 +31,14 @@
 #                                        → 23 ckpts × 7000 = ~161k segments total
 #                                          covers the 100k budget for all types
 #   SEGMENT_LENGTH      default: 50
+#   SAVE_EVERY          default: 10000   segments per within-checkpoint batch;
+#                                        each batch is its own file (append, not
+#                                        rewrite), so a walltime kill loses at
+#                                        most one batch — resubmitting the same
+#                                        command continues from there. Matters
+#                                        most when N_SEGMENTS is large relative
+#                                        to the number of checkpoints (e.g. a
+#                                        single handpicked checkpoint).
 #
 # Example — 5 handpicked checkpoints from the oracle_sac_1m scratch runs,
 # segment length 64:
@@ -67,6 +75,7 @@ CHECKPOINT_STEPS="${CHECKPOINT_STEPS:-}"
 N_EPISODES="${N_EPISODES:-20}"
 N_SEGMENTS="${N_SEGMENTS:-7000}"
 SEGMENT_LENGTH="${SEGMENT_LENGTH:-50}"
+SAVE_EVERY="${SAVE_EVERY:-10000}"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
 [[ "$OUTPUT_DIR"       != /* ]] && OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
@@ -81,6 +90,7 @@ echo "CHECKPOINT_STEPS    = ${CHECKPOINT_STEPS:-<unset>}"
 echo "N_EPISODES          = ${N_EPISODES}"
 echo "N_SEGMENTS          = ${N_SEGMENTS}"
 echo "SEGMENT_LENGTH      = ${SEGMENT_LENGTH}"
+echo "SAVE_EVERY          = ${SAVE_EVERY}"
 echo "=============================="
 
 . "${REPO_ROOT}/setup_shell.sh"
@@ -100,5 +110,6 @@ python3 "${REPO_ROOT}/scripts/build_trajectory_pool.py" \
     --n-episodes-per-checkpoint "$N_EPISODES" \
     --n-segments-per-checkpoint "$N_SEGMENTS" \
     --segment-length            "$SEGMENT_LENGTH" \
+    --save-every                "$SAVE_EVERY" \
     --output-dir                "$OUTPUT_DIR" \
     --device cpu

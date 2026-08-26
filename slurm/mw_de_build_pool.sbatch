@@ -22,11 +22,23 @@
 #   ORACLE_RUNS_BASE    default: runs/runs/chpc/oracle_sac_seeds  (relative to repo root)
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/mw_de_pool
 #   CHECKPOINT_INTERVAL default: 10000   → uses all saved ckpts (every 10k)
+#                                        ignored if CHECKPOINT_STEPS is set
+#   CHECKPOINT_STEPS    default: unset   → space-separated exact steps to use
+#                                        instead of an interval, e.g.
+#                                        CHECKPOINT_STEPS="340000 420000 500000 580000 660000"
 #   N_EPISODES          default: 20      episodes rolled out per checkpoint
 #   N_SEGMENTS          default: 7000    segments sampled per checkpoint
 #                                        → 23 ckpts × 7000 = ~161k segments total
 #                                          covers the 100k budget for all types
 #   SEGMENT_LENGTH      default: 50
+#
+# Example — 5 handpicked checkpoints from the oracle_sac_1m scratch runs,
+# segment length 64:
+#   ENV_NAME=mw_door-open-v2 \
+#   ORACLE_RUNS_BASE=/scratch/general/vast/u1472210/oracle_sac_1m \
+#   CHECKPOINT_STEPS="340000 420000 500000 580000 660000" \
+#   SEGMENT_LENGTH=64 \
+#     sbatch --account=<account> --partition=<partition> slurm/mw_de_build_pool.sbatch
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -51,6 +63,7 @@ ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-10000}"
+CHECKPOINT_STEPS="${CHECKPOINT_STEPS:-}"
 N_EPISODES="${N_EPISODES:-20}"
 N_SEGMENTS="${N_SEGMENTS:-7000}"
 SEGMENT_LENGTH="${SEGMENT_LENGTH:-50}"
@@ -63,7 +76,8 @@ echo "SLURM_JOB_ID        = ${SLURM_JOB_ID:-}"
 echo "ENV_NAME            = ${ENV_NAME}"
 echo "ORACLE_RUNS_BASE    = ${ORACLE_RUNS_BASE}"
 echo "OUTPUT_DIR          = ${OUTPUT_DIR}"
-echo "CHECKPOINT_INTERVAL = ${CHECKPOINT_INTERVAL}"
+echo "CHECKPOINT_INTERVAL = ${CHECKPOINT_INTERVAL}  (ignored if CHECKPOINT_STEPS is set)"
+echo "CHECKPOINT_STEPS    = ${CHECKPOINT_STEPS:-<unset>}"
 echo "N_EPISODES          = ${N_EPISODES}"
 echo "N_SEGMENTS          = ${N_SEGMENTS}"
 echo "SEGMENT_LENGTH      = ${SEGMENT_LENGTH}"
@@ -71,10 +85,18 @@ echo "=============================="
 
 . "${REPO_ROOT}/setup_shell.sh"
 
+# CHECKPOINT_STEPS (if set) takes an explicit, exact set of checkpoint steps
+# instead of a fixed interval — see build_trajectory_pool.py --checkpoint-steps.
+CKPT_ARGS=(--checkpoint-interval "$CHECKPOINT_INTERVAL")
+if [[ -n "$CHECKPOINT_STEPS" ]]; then
+    read -r -a STEP_ARR <<< "$CHECKPOINT_STEPS"
+    CKPT_ARGS=(--checkpoint-steps "${STEP_ARR[@]}")
+fi
+
 python3 "${REPO_ROOT}/scripts/build_trajectory_pool.py" \
     --oracle-runs-base          "$ORACLE_RUNS_BASE" \
     --envs                      "$ENV_NAME" \
-    --checkpoint-interval       "$CHECKPOINT_INTERVAL" \
+    "${CKPT_ARGS[@]}" \
     --n-episodes-per-checkpoint "$N_EPISODES" \
     --n-segments-per-checkpoint "$N_SEGMENTS" \
     --segment-length            "$SEGMENT_LENGTH" \

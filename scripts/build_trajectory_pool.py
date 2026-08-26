@@ -54,10 +54,11 @@ ENVS_ALL = [
 ]
 
 
-def _scan_checkpoints(search_dir, model_dir, checkpoint_interval):
-    """Find model_<step>.pt files in search_dir at the given interval.
-    Returns list of (step, ckpt_path, model_dir) tuples.
+def _scan_checkpoints(search_dir, model_dir, checkpoint_interval=None, checkpoint_steps=None):
+    """Find model_<step>.pt files in search_dir, either at a fixed interval or
+    matching an explicit set of steps. Returns list of (step, ckpt_path, model_dir).
     """
+    wanted = set(checkpoint_steps) if checkpoint_steps is not None else None
     results = []
     for fname in os.listdir(search_dir):
         if not fname.startswith("model_") or not fname.endswith(".pt"):
@@ -66,32 +67,45 @@ def _scan_checkpoints(search_dir, model_dir, checkpoint_interval):
             step = int(fname[len("model_"):-len(".pt")])
         except ValueError:
             continue
-        if step % checkpoint_interval == 0:
+        if wanted is not None:
+            if step in wanted:
+                results.append((step, os.path.join(search_dir, fname), model_dir))
+        elif step % checkpoint_interval == 0:
             results.append((step, os.path.join(search_dir, fname), model_dir))
     return results
 
 
-def get_checkpoint_paths(run_dir, checkpoint_interval):
+def get_checkpoint_paths(run_dir, checkpoint_interval=None, checkpoint_steps=None):
     """Return sorted list of (step, ckpt_path, model_dir) tuples.
 
     Supports two layouts:
       flat  : run_dir/model_<step>.pt          (model_dir = run_dir)
       seeded: run_dir/seed-*/model_<step>.pt   (model_dir = seed subdir)
     Seeded layout is detected when no model_*.pt files exist directly in run_dir.
-    """
-    flat = _scan_checkpoints(run_dir, run_dir, checkpoint_interval)
-    if flat:
-        return sorted(flat, key=lambda x: x[0])
 
-    checkpoints = []
-    seed_dirs = sorted(
-        e for e in os.listdir(run_dir)
-        if e.startswith("seed-") and os.path.isdir(os.path.join(run_dir, e))
-    )
-    for seed in seed_dirs:
-        seed_dir = os.path.join(run_dir, seed)
-        checkpoints.extend(_scan_checkpoints(seed_dir, seed_dir, checkpoint_interval))
-    return sorted(checkpoints, key=lambda x: x[0])
+    If checkpoint_steps is given, only those exact steps are matched (and
+    checkpoint_interval is ignored) — raises FileNotFoundError if any requested
+    step has no corresponding model_<step>.pt.
+    """
+    flat = _scan_checkpoints(run_dir, run_dir, checkpoint_interval, checkpoint_steps)
+    if flat:
+        result = sorted(flat, key=lambda x: x[0])
+    else:
+        checkpoints = []
+        seed_dirs = sorted(
+            e for e in os.listdir(run_dir)
+            if e.startswith("seed-") and os.path.isdir(os.path.join(run_dir, e))
+        )
+        for seed in seed_dirs:
+            seed_dir = os.path.join(run_dir, seed)
+            checkpoints.extend(_scan_checkpoints(seed_dir, seed_dir, checkpoint_interval, checkpoint_steps))
+        result = sorted(checkpoints, key=lambda x: x[0])
+
+    if checkpoint_steps is not None:
+        missing = set(checkpoint_steps) - {s for s, _, _ in result}
+        if missing:
+            raise FileNotFoundError(f"Missing checkpoints for steps {sorted(missing)} in {run_dir}")
+    return result
 
 
 def load_model(run_dir, checkpoint_path, device):
@@ -287,7 +301,14 @@ def main():
     )
     parser.add_argument(
         "--checkpoint-interval", type=int, default=20000,
-        help="Use checkpoints every N training steps (default: 20000).",
+        help="Use checkpoints every N training steps (default: 20000). "
+             "Ignored if --checkpoint-steps is given.",
+    )
+    parser.add_argument(
+        "--checkpoint-steps", type=int, nargs="+", default=None,
+        help="Explicit list of checkpoint steps to use instead of a fixed interval, "
+             "e.g. --checkpoint-steps 340000 420000 500000 580000 660000. "
+             "Only these exact model_<step>.pt files are rolled out.",
     )
     parser.add_argument(
         "--n-episodes-per-checkpoint", type=int, default=10,
@@ -331,8 +352,15 @@ def main():
             print(f"{'='*65}\n")
             continue
 
-        checkpoints = get_checkpoint_paths(run_dir, args.checkpoint_interval)
-        assert checkpoints, f"No checkpoints at interval={args.checkpoint_interval} in {run_dir}"
+        checkpoints = get_checkpoint_paths(
+            run_dir,
+            checkpoint_interval=args.checkpoint_interval,
+            checkpoint_steps=args.checkpoint_steps,
+        )
+        if args.checkpoint_steps is not None:
+            assert checkpoints, f"None of the requested checkpoint steps were found in {run_dir}"
+        else:
+            assert checkpoints, f"No checkpoints at interval={args.checkpoint_interval} in {run_dir}"
 
         total_segs = len(checkpoints) * args.n_segments_per_checkpoint
         print(f"Checkpoints : {len(checkpoints)}  "

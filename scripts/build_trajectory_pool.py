@@ -257,7 +257,11 @@ def generate_checkpoint_segments(model, env, n_segments, segment_length,
         (os.path.join(batch_dir, f) for f in os.listdir(batch_dir) if f.startswith("batch_")),
         key=lambda p: int(os.path.basename(p)[len("batch_"):-len(".npz")]),
     )
-    n_done = sum(np.load(p)["obs"].shape[0] for p in batch_paths)
+    def _batch_len(path):
+        with np.load(path) as d:
+            return d["obs"].shape[0]
+
+    n_done = sum(_batch_len(p) for p in batch_paths)
     if n_done > 0:
         print(f"      resuming: {n_done}/{n_segments} segments already batched "
               f"({len(batch_paths)} batch files)")
@@ -316,9 +320,9 @@ def build_pool_for_env(checkpoints, n_episodes_per_checkpoint,
 
         obs_b, act_b, rew_b, state_b = [], [], [], []
         for p in batch_paths:
-            d = np.load(p)
-            obs_b.append(d["obs"]); act_b.append(d["action"])
-            rew_b.append(d["reward"]); state_b.append(d["state"])
+            with np.load(p) as d:
+                obs_b.append(d["obs"]); act_b.append(d["action"])
+                rew_b.append(d["reward"]); state_b.append(d["state"])
         obs, action, reward, state = (
             np.concatenate(obs_b, axis=0), np.concatenate(act_b, axis=0),
             np.concatenate(rew_b, axis=0), np.concatenate(state_b, axis=0),
@@ -343,12 +347,12 @@ def build_pool_for_env(checkpoints, n_episodes_per_checkpoint,
     for step, _, model_dir in checkpoints:
         seed_tag   = os.path.basename(model_dir)
         stage_path = os.path.join(staging_dir, f"{seed_tag}_step_{step}.npz")
-        d = np.load(stage_path)
-        all_obs.append(d["obs"])
-        all_action.append(d["action"])
-        all_reward.append(d["reward"])
-        all_state.append(d["state"])
-        all_ckpt_step.append(d["checkpoint_step"])
+        with np.load(stage_path) as d:
+            all_obs.append(d["obs"])
+            all_action.append(d["action"])
+            all_reward.append(d["reward"])
+            all_state.append(d["state"])
+            all_ckpt_step.append(d["checkpoint_step"])
 
     return (
         np.concatenate(all_obs,       axis=0),

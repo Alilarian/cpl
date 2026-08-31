@@ -48,6 +48,14 @@
 # command line (or export before calling sbatch):
 #   MANIFEST       default: slurm/manifests/oracle_sac_1m/manifest.tsv
 #   WANDB_PROJECT  default: oracle-sac-1m
+#   EXTRA_STEPS    default: unset  → train EXTRA_STEPS beyond whatever step
+#                                     final_model.pt is currently at, instead
+#                                     of the config's fixed total_steps=1e6.
+#                                     Use this to keep extending a run that's
+#                                     already past its original target, e.g.
+#                                     to squeeze in 500k more steps:
+#   sbatch --array=1,6 --time=72:00:00 --mem=32G --cpus-per-task=8 \
+#          --export=ALL,EXTRA_STEPS=500000 slurm/oracle_train_1m.sbatch
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -127,10 +135,31 @@ export WANDB_PROJECT="${WANDB_PROJECT:-oracle-sac-1m}"
 export WANDB_RUN_NAME="${ENV_NAME}"
 export WANDB_GROUP="oracle_sac_1m"
 
+# ── Extend beyond the config's total_steps, if requested ───────────────────────
+# EXTRA_STEPS (if set) trains EXTRA_STEPS beyond whatever step final_model.pt
+# is currently at (0 if training hasn't started yet), overriding
+# trainer_kwargs.total_steps for this run only — the on-disk config is untouched.
+EXTRA_SETS=()
+if [[ -n "${EXTRA_STEPS:-}" ]]; then
+    CURRENT_STEP=0
+    if [[ -f "${RUN_PATH}/final_model.pt" ]]; then
+        CURRENT_STEP=$(python3 - "${RUN_PATH}/final_model.pt" <<'PYEOF'
+import sys, torch
+ckpt = torch.load(sys.argv[1], map_location="cpu")
+print(ckpt["metadata"]["step"])
+PYEOF
+)
+    fi
+    NEW_TOTAL_STEPS=$(( CURRENT_STEP + EXTRA_STEPS ))
+    echo "EXTRA_STEPS          = ${EXTRA_STEPS}  (current step ${CURRENT_STEP} -> new total_steps ${NEW_TOTAL_STEPS})"
+    EXTRA_SETS+=(--set "trainer_kwargs.total_steps=${NEW_TOTAL_STEPS}")
+fi
+
 # ── Train ─────────────────────────────────────────────────────────────────────
 python3 "${REPO_ROOT}/scripts/train.py" \
     --config "$CONFIG_PATH" \
-    --path   "$RUN_PATH"
+    --path   "$RUN_PATH"   \
+    "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}"
 
 # Write sentinel only on clean exit (all steps reached).
 # A walltime kill (SIGTERM) prevents this, so the next resubmit resumes training.

@@ -191,13 +191,13 @@ def main():
         "--discount", type=float, default=0.99,
     )
     parser.add_argument(
-        "--sort-by-gap", action="store_true", default=True,
-        help="Sort output pairs by gap magnitude descending (most informative first, "
-             "default: True — matching multi-type-feedback's improvement-sort step).",
+        "--sort-by-gap", dest="sort_by_gap", action="store_true", default=False,
+        help="Sort output pairs by gap magnitude descending (most informative first). "
+             "Default: False — pairs are kept in their (already-random) sampled order.",
     )
     parser.add_argument(
         "--no-sort", dest="sort_by_gap", action="store_false",
-        help="Disable sorting by gap magnitude.",
+        help="(default) Disable sorting by gap magnitude.",
     )
     parser.add_argument(
         "--seed", type=int, default=42,
@@ -324,11 +324,16 @@ def main():
     else:
         n_out = args.n_pairs
 
-    # Sort by |gap| descending (most informative first) then truncate
-    order = np.argsort(np.abs(gap))[::-1]
-    idx_a = idx_a[order][:n_out]
-    idx_b = idx_b[order][:n_out]
-    gap   = gap[order][:n_out]
+    # Optionally sort by |gap| descending (most informative first) before truncating.
+    # BUG FIX: this used to run unconditionally regardless of --sort-by-gap/--no-sort.
+    if args.sort_by_gap:
+        order = np.argsort(np.abs(gap))[::-1]
+        idx_a = idx_a[order]
+        idx_b = idx_b[order]
+        gap   = gap[order]
+    idx_a = idx_a[:n_out]
+    idx_b = idx_b[:n_out]
+    gap   = gap[:n_out]
 
     # ------------------------------------------------------------------
     # Build output arrays: index 0 = better (higher rl_sum)

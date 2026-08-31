@@ -22,6 +22,10 @@ Reuses: load_model, score_trajectories, rollout_from_state, get_checkpoint_paths
         save_npz — logic is identical; only the candidate construction differs.
 There are no stratified tiers here: K is always 2.
 
+Resumable (progress saved every --save-every kept pairs) and parallelizable via
+--num-shards/--shard-id, same as generate_demo_labels.py — merge shards with
+scripts/merge_label_shards.py.
+
 Output (--output-dir/<env>/corr_labels.npz):
     obs           : (N, 2, T, obs_dim)   [0]=better traj, [1]=worse traj
     action        : (N, 2, T, act_dim)
@@ -215,12 +219,13 @@ def main():
                              "Pairs are kept regardless of direction — flipped so "
                              "index 0 is always the better trajectory. Only truly "
                              "ambiguous pairs (|gap| < threshold) are discarded.")
-    parser.add_argument("--sort-by-improvement", action="store_true", default=True,
+    parser.add_argument("--sort-by-improvement", dest="sort_by_improvement",
+                        action="store_true", default=False,
                         help="Sort output by improvement magnitude descending "
-                             "(most corrective pairs first, default: True)")
+                             "(most corrective pairs first). Default: False.")
     parser.add_argument("--no-sort", dest="sort_by_improvement",
                         action="store_false",
-                        help="Disable sorting by improvement magnitude")
+                        help="(default) Disable sorting by improvement magnitude")
     parser.add_argument("--discount",        type=float, default=0.99)
     parser.add_argument("--mcmc-samples",   type=int,   default=64,
                         help="MCMC samples for V(s) estimation (default: 64)")
@@ -229,6 +234,13 @@ def main():
                              "Higher values amortize PyTorch overhead on CPU.")
     parser.add_argument("--save-every",   type=int,   default=500,
                         help="Save progress every N kept samples (default: 500)")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Split the pool into this many shards for parallel generation "
+                             "(default: 1, no sharding). Run one process per --shard-id "
+                             "(e.g. as a SLURM array job) then merge with "
+                             "scripts/merge_label_shards.py.")
+    parser.add_argument("--shard-id", type=int, default=0,
+                        help="This process's shard index in [0, num_shards) (default: 0).")
     parser.add_argument("--output-dir",   type=str,   default="datasets/mw/corr_labels")
     parser.add_argument("--device",       type=str,   default="auto")
     args = parser.parse_args()
@@ -258,6 +270,16 @@ def main():
     act_dim = pool_action.shape[-1]
     print(f"  N={N} segments, T={T} steps, obs_dim={obs_dim}")
 
+    assert 0 <= args.shard_id < args.num_shards, "--shard-id must be in [0, num_shards)"
+    if args.num_shards > 1:
+        chunk = -(-N // args.num_shards)  # ceil division
+        shard_start = args.shard_id * chunk
+        shard_end   = min(N, shard_start + chunk)
+        print(f"  Sharding: shard {args.shard_id}/{args.num_shards} "
+              f"covers pool indices [{shard_start}, {shard_end})")
+    else:
+        shard_start, shard_end = 0, N
+
     # ------------------------------------------------------------------
     # Load expert (also used as oracle for scoring)
     # ------------------------------------------------------------------
@@ -269,11 +291,12 @@ def main():
     # ------------------------------------------------------------------
     # Output paths + resume
     # ------------------------------------------------------------------
-    env_name  = os.path.basename(os.path.dirname(args.pool_path))
-    out_dir   = os.path.join(args.output_dir, env_name)
+    env_name     = os.path.basename(os.path.dirname(args.pool_path))
+    out_dir      = os.path.join(args.output_dir, env_name)
     os.makedirs(out_dir, exist_ok=True)
-    out_path  = os.path.join(out_dir, "corr_labels.npz")
-    prog_path = os.path.join(out_dir, "corr_labels_progress.npz")
+    shard_suffix = f"_shard{args.shard_id}of{args.num_shards}" if args.num_shards > 1 else ""
+    out_path     = os.path.join(out_dir, f"corr_labels{shard_suffix}.npz")
+    prog_path    = os.path.join(out_dir, f"corr_labels{shard_suffix}_progress.npz")
 
     if os.path.exists(out_path):
         print(f"\nOutput already exists: {out_path}")
@@ -284,7 +307,7 @@ def main():
         [], [], [], [], [], []
     n_skip_done = 0
     n_skip_gap  = 0
-    start_idx   = 0
+    start_idx   = shard_start
 
     if os.path.exists(prog_path):
         print(f"Resuming from progress file: {prog_path}")
@@ -308,7 +331,7 @@ def main():
     # is called once per batch of --score-batch-size segments, giving 3-5×
     # speedup on CPU by amortizing PyTorch overhead and improving BLAS use.
     # ------------------------------------------------------------------
-    print(f"\nProcessing {N - start_idx} segments "
+    print(f"\nProcessing {shard_end - start_idx} segments "
           f"(score batch size={args.score_batch_size})...\n")
 
     # Rollout buffer: collect before scoring
@@ -320,9 +343,9 @@ def main():
 
     prev_milestone = len(out_obs) // args.save_every
 
-    for i in range(start_idx, N):
+    for i in range(start_idx, shard_end):
         if i % 200 == 0:
-            print(f"  [{i:>5}/{N}]  kept={len(out_obs)}  "
+            print(f"  [{i:>5}/{shard_end}]  kept={len(out_obs)}  "
                   f"skip_done={n_skip_done}  skip_gap={n_skip_gap}")
 
         s0 = pool_state[i, 0]
@@ -337,7 +360,7 @@ def main():
             buf_orig_act.append(pool_action[i])
             buf_orig_rew.append(pool_reward[i])
 
-        flush = len(buf_pool_idx) >= args.score_batch_size or i == N - 1
+        flush = len(buf_pool_idx) >= args.score_batch_size or i == shard_end - 1
         if not flush or not buf_pool_idx:
             continue
 
@@ -417,7 +440,8 @@ def main():
     # ------------------------------------------------------------------
     N_out = len(out_obs)
     print(f"\n{'='*55}")
-    print(f"Segments processed  : {N}")
+    print(f"Segments processed  : {shard_end - shard_start}"
+          f"{'  (shard ' + str(args.shard_id) + '/' + str(args.num_shards) + ')' if args.num_shards > 1 else ''}")
     print(f"Kept                : {N_out}")
     print(f"Skipped (done early): {n_skip_done}")
     print(f"Skipped (gap)       : {n_skip_gap}")

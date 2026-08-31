@@ -5,6 +5,9 @@ For each segment in pool.npz:
   1. Restore env to s_0 = state[i, 0]
   2. Roll out expert (best_model.pt) from s_0                     → 1 candidate
   3. Roll out 1 checkpoint per stratified tier from s_0            → n_tiers candidates
+     Tiers are stratified (by step) across checkpoints whose logged eval/success
+     falls in [--success-min, --success-max] (default 0.2-0.6) — see
+     get_checkpoints_by_success / select_checkpoints_by_success.py.
   4. Include the original pool segment as a candidate              → 1 candidate
      (already starts at s_0, no extra rollout needed)
   5. Score all candidates with oracle rl_sum = Σ r_t + V(s_T) - V(s_0)
@@ -33,6 +36,11 @@ Resumable: progress is saved every --save-every segments to
   On re-run the script reloads this file and continues from the last saved index.
   The final output replaces the progress file once all segments are processed.
 
+Parallelizable: pass --num-shards N and run N processes with --shard-id 0..N-1
+  (e.g. a SLURM array job) to split the pool into contiguous shards. Each shard
+  is independently resumable via its own progress file. Once all shards finish,
+  merge with scripts/merge_label_shards.py.
+
 Output (--output-dir/<env>/demo_labels_K<K>.npz):
     obs              : (N, K, T, obs_dim)   index 0 = expert (demo), 1..K-1 = counterfactuals
                        sorted descending by rl_sum
@@ -60,6 +68,7 @@ import numpy as np
 import torch
 
 from research.utils.config import Config
+from select_checkpoints_by_success import load_success_rows, existing_checkpoint_steps
 
 
 def save_npz(path, **arrays):
@@ -217,18 +226,23 @@ def rollout_from_state(model, env, s0, segment_length, device):
 # Stratified checkpoint pool
 # ---------------------------------------------------------------------------
 
-def get_checkpoint_paths(run_dir, checkpoint_interval):
-    """Return sorted (step, path) list for model_<step>.pt at the given interval."""
-    ckpts = []
-    for fname in os.listdir(run_dir):
-        if not fname.startswith("model_") or not fname.endswith(".pt"):
-            continue
-        try:
-            step = int(fname[len("model_"):-len(".pt")])
-        except ValueError:
-            continue
-        if step % checkpoint_interval == 0:
-            ckpts.append((step, os.path.join(run_dir, fname)))
+def get_checkpoints_by_success(run_dir, checkpoint_interval, success_min, success_max):
+    """
+    Return sorted (step, path) list for on-disk model_<step>.pt checkpoints whose
+    logged eval/success (read from run_dir/log.csv — see select_checkpoints_by_success.py)
+    falls in [success_min, success_max]. Counterfactual tiers are then stratified by
+    step *within* this filtered set, so they span the requested quality band rather
+    than the full training run.
+    """
+    rows = load_success_rows(run_dir)               # [(step, success), ...]
+    ckpt_steps = existing_checkpoint_steps(run_dir)  # set of steps with model_<step>.pt
+    ckpts = [
+        (step, os.path.join(run_dir, f"model_{step}.pt"))
+        for step, succ in rows
+        if step % checkpoint_interval == 0
+        and step in ckpt_steps
+        and success_min <= succ <= success_max
+    ]
     ckpts.sort(key=lambda x: x[0])
     return ckpts
 
@@ -290,7 +304,17 @@ def main():
     parser.add_argument("--expert-checkpoint", type=str, default="best_model.pt",
                         help="Expert checkpoint filename (default: best_model.pt)")
     parser.add_argument("--checkpoint-interval", type=int, default=20000,
-                        help="Step interval for intermediate checkpoints (default: 20000)")
+                        help="Step granularity of on-disk checkpoints (default: 20000, "
+                             "matching trainer_kwargs.checkpoint_freq).")
+    parser.add_argument("--success-min", type=float, default=0.2,
+                        help="Lower bound of eval/success rate for counterfactual "
+                             "checkpoints, from run_dir/log.csv (default: 0.2).")
+    parser.add_argument("--success-max", type=float, default=0.6,
+                        help="Upper bound of eval/success rate for counterfactual "
+                             "checkpoints (default: 0.6). Only checkpoints with "
+                             "success in [--success-min, --success-max] are used to "
+                             "build the stratified tiers — the expert checkpoint "
+                             "(--expert-checkpoint) is unaffected by this range.")
     parser.add_argument("--n-counterfactuals", type=int, default=6,
                         help="Number of counterfactuals per demo (default: 6). "
                              "K = n_counterfactuals + 1 = 7. "
@@ -312,6 +336,13 @@ def main():
                              "K×batch tensors must fit in RAM: K=7, T=50, B=32 → ~14MB obs.")
     parser.add_argument("--save-every",  type=int,   default=500,
                         help="Save progress checkpoint every N kept samples (default: 500).")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Split the pool into this many shards for parallel generation "
+                             "(default: 1, no sharding). Run one process per --shard-id "
+                             "(e.g. as a SLURM array job) then merge with "
+                             "scripts/merge_label_shards.py.")
+    parser.add_argument("--shard-id", type=int, default=0,
+                        help="This process's shard index in [0, num_shards) (default: 0).")
     parser.add_argument("--max-segments", type=int, default=None,
                         help="Process only the first N pool segments (default: all). "
                              "For quick sanity checks before a full run — output is written to "
@@ -357,6 +388,16 @@ def main():
         pool_reward, pool_state, pool_ckpt = pool_reward[:N], pool_state[:N], pool_ckpt[:N]
         print(f"  --max-segments set: truncated to N={N} segments (sanity-check run)")
 
+    assert 0 <= args.shard_id < args.num_shards, "--shard-id must be in [0, num_shards)"
+    if args.num_shards > 1:
+        chunk = -(-N // args.num_shards)  # ceil division
+        shard_start = args.shard_id * chunk
+        shard_end   = min(N, shard_start + chunk)
+        print(f"  Sharding: shard {args.shard_id}/{args.num_shards} "
+              f"covers pool indices [{shard_start}, {shard_end})")
+    else:
+        shard_start, shard_end = 0, N
+
     # ------------------------------------------------------------------
     # Load expert (also used as oracle for scoring)
     # ------------------------------------------------------------------
@@ -368,8 +409,17 @@ def main():
     # ------------------------------------------------------------------
     # Build stratified counterfactual pool
     # ------------------------------------------------------------------
-    print(f"\nBuilding stratified pool ({n_tiers} tiers × {args.checkpoints_per_tier} ckpts/tier):")
-    all_ckpts   = get_checkpoint_paths(args.run_dir, args.checkpoint_interval)
+    print(f"\nBuilding stratified pool ({n_tiers} tiers × {args.checkpoints_per_tier} ckpts/tier) "
+          f"from checkpoints with success in [{args.success_min}, {args.success_max}]:")
+    all_ckpts = get_checkpoints_by_success(
+        args.run_dir, args.checkpoint_interval, args.success_min, args.success_max,
+    )
+    assert all_ckpts, (
+        f"No checkpoints with eval/success in [{args.success_min}, {args.success_max}] "
+        f"in {args.run_dir} — widen --success-min/--success-max or check log.csv."
+    )
+    print(f"  {len(all_ckpts)} checkpoints in range: "
+          f"steps {all_ckpts[0][0]:,}–{all_ckpts[-1][0]:,}")
     tier_models = build_stratified_pool(
         args.run_dir, all_ckpts, n_tiers, args.checkpoints_per_tier, device,
     )
@@ -387,9 +437,10 @@ def main():
     env_name    = os.path.basename(os.path.dirname(args.pool_path))
     out_dir     = os.path.join(args.output_dir, env_name)
     os.makedirs(out_dir, exist_ok=True)
-    suffix      = f"_sanity{args.max_segments}" if args.max_segments is not None else ""
-    out_path    = os.path.join(out_dir, f"demo_labels_K{K}{suffix}.npz")
-    prog_path   = os.path.join(out_dir, f"demo_labels_K{K}{suffix}_progress.npz")
+    suffix       = f"_sanity{args.max_segments}" if args.max_segments is not None else ""
+    shard_suffix = f"_shard{args.shard_id}of{args.num_shards}" if args.num_shards > 1 else ""
+    out_path     = os.path.join(out_dir, f"demo_labels_K{K}{suffix}{shard_suffix}.npz")
+    prog_path    = os.path.join(out_dir, f"demo_labels_K{K}{suffix}{shard_suffix}_progress.npz")
 
     if os.path.exists(out_path):
         print(f"Output already exists: {out_path}")
@@ -399,7 +450,7 @@ def main():
     out_obs, out_action, out_reward, out_adv, out_ckpt = [], [], [], [], []
     n_skip_done  = 0
     n_skip_gap   = 0
-    start_idx    = 0
+    start_idx    = shard_start
 
     if os.path.exists(prog_path):
         print(f"Resuming from progress file: {prog_path}")
@@ -421,7 +472,7 @@ def main():
     # is called once per batch of --score-batch-size segments, giving 3-5×
     # speedup on CPU by amortizing PyTorch overhead and improving BLAS use.
     # ------------------------------------------------------------------
-    print(f"\nProcessing {N - start_idx} segments "
+    print(f"\nProcessing {shard_end - start_idx} segments "
           f"(K={K}, score batch size={args.score_batch_size})...\n")
 
     # Buffer: collect rollouts across segments before scoring
@@ -432,9 +483,9 @@ def main():
 
     prev_milestone = len(out_obs) // args.save_every
 
-    for i in range(start_idx, N):
+    for i in range(start_idx, shard_end):
         if i % 200 == 0:
-            print(f"  [{i:>5}/{N}]  kept={len(out_obs)}  "
+            print(f"  [{i:>5}/{shard_end}]  kept={len(out_obs)}  "
                   f"skip_done={n_skip_done}  skip_gap={n_skip_gap}")
 
         s0 = pool_state[i, 0]
@@ -475,7 +526,7 @@ def main():
                 buf_cand_act.append(cand_act)
                 buf_cand_rew.append(cand_rew)
 
-        flush = len(buf_pool_idx) >= args.score_batch_size or i == N - 1
+        flush = len(buf_pool_idx) >= args.score_batch_size or i == shard_end - 1
         if not flush or not buf_pool_idx:
             continue
 
@@ -554,7 +605,8 @@ def main():
     # ------------------------------------------------------------------
     N_out = len(out_obs)
     print(f"\n{'='*55}")
-    print(f"Segments processed : {N}")
+    print(f"Segments processed : {shard_end - shard_start}"
+          f"{'  (shard ' + str(args.shard_id) + '/' + str(args.num_shards) + ')' if args.num_shards > 1 else ''}")
     print(f"Kept               : {N_out}")
     print(f"Skipped (done)     : {n_skip_done}")
     print(f"Skipped (gap)      : {n_skip_gap}")

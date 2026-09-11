@@ -13,7 +13,9 @@ For each env × feedback type, reports:
 Unique pool segment estimation:
   corr / demo / credit  : N per env (one label per pool segment)
   seq_estop             : len(unique(traj_idx)) if traj_idx stored
-  pref / scalar         : unique checkpoint steps × (N / unique_ckpts)
+  scalar                : len(unique(traj_id)) — exact, since each pair is
+                          drawn from a single source trajectory (traj_id stored)
+  pref                  : unique checkpoint steps × (N / unique_ckpts)
                           (approximation; segments re-sampled from pool)
 
 Output:
@@ -104,12 +106,17 @@ def stats_pref_or_corr(d, ftype):
 
     gap = adv_scores[:, 0] - adv_scores[:, 1]
 
-    # Unique pool segments: approximation (segments re-sampled from pool for pref/scalar)
     unique_ckpts = np.unique(ckpt)
     n_unique_ckpts = len(unique_ckpts)
-    # Each pair uses 2 segments → upper bound on unique segments = 2N
-    # Lower bound via checkpoint diversity
-    approx_unique_segs = min(2 * N, N)  # conservative: N distinct pool segs at most
+
+    if "traj_id" in d:
+        # scalar: each pair is drawn from a single source trajectory — exact count.
+        approx_unique_segs = int(len(np.unique(d["traj_id"])))
+    else:
+        # pref: segments re-sampled from pool — approximation.
+        # Each pair uses 2 segments → upper bound on unique segments = 2N
+        # Lower bound via checkpoint diversity
+        approx_unique_segs = min(2 * N, N)  # conservative: N distinct pool segs at most
 
     row = {
         "N"                 : N,

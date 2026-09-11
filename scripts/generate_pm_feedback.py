@@ -11,9 +11,14 @@ Feedback types  (--type)
   demo              Demonstrative      — K-way counterfactuals sorted by rl_sum
   estop             E-stop             — halt prefix preferred over full trajectory
   seq_estop         Sequential e-stop  — h-step window pairs around stop time τ
-  scalar            Scalar feedback    — sliding window over consecutive segments;
-                                         oracle rl_sum (h=8 steps) normalized to
-                                         [-1,1] + Gaussian noise → local pairwise prefs
+  scalar            Scalar feedback    — each trajectory is split into K temporal
+                                         subsegments (length h, stride sub_stride),
+                                         each scored with oracle rl_sum, normalized
+                                         globally to [-1,1]; within a comparison
+                                         window of W subsegments, candidate pairs
+                                         with min_lag <= |i-j| <= max_lag are formed
+                                         and a random subset is converted into hard
+                                         preferences. Never compares across trajectories.
   credit_assignment Credit assignment  — oracle selects best length-k subsegment
                                          from each reference trajectory (T=64);
                                          multi-way cross-entropy loss over C candidates
@@ -41,8 +46,9 @@ Output schemas (identical to MetaWorld equivalents)
                  checkpoint_step (M,)
   scalar      :  obs (M,2,segment_len,2)  action (M,2,segment_len,2)
                  reward (M,2,segment_len)  adv_scores (M,2)
-                 checkpoint_step (M,2)
-                 Same layout as pref — PMFeedbackBuffer loads it directly.
+                 checkpoint_step (M,2)  traj_id (M,)  start_idx (M,2)
+                 Same core layout as pref — PMFeedbackBuffer loads it directly.
+                 traj_id/start_idx are provenance-only (verify no cross-traj pairs).
   credit_assn :  obs (N,C,k,2)  action (N,C,k,2)  adv_scores (N,C)
                  chosen_idx (N,)  checkpoint_step (N,)
                  C = T-k+1 candidate windows per trajectory.
@@ -94,7 +100,9 @@ python scripts/generate_pm_feedback.py \\
     --pool datasets/pm/pool.npz \\
     --advantage-npz runs/pm_sac_oracle/advantage_vi_N100.npz \\
     --out datasets/pm/scalar_labels.npz \\
-    --segment-len 8 --window-size 10 --noise-std 0.1 --scalar-delta 0.1
+    --segment-len 16 --sub-stride 12 --window-size 5 --cmp-stride 5 \\
+    --min-lag 2 --max-lag 4 --max-pairs-per-window 4 \\
+    --noise-std 0.0 --scalar-delta 0.0
 
 # Credit assignment
 python scripts/generate_pm_feedback.py \\
@@ -301,6 +309,33 @@ def simulate_estop(delta: np.ndarray, rho: float, lam: float, kappa: float,
 # Feedback type: pairwise preference
 # ---------------------------------------------------------------------------
 
+def sample_and_filter_pairs(scores: np.ndarray, N: int, n_candidates: int,
+                            min_adv_gap: float, rng: np.random.Generator):
+    """
+    Sample n_candidates distinct-index (a, b) pairs with replacement and keep
+    only those whose |score gap| >= min_adv_gap.
+
+    Shared by generate_pref (scripts/generate_pm_feedback.py) and the webapp
+    trial-bank builder (webapp/backend/trial_bank.py) so both draw candidate
+    pairs the same way.
+
+    Returns
+    -------
+    idx_a, idx_b : kept candidate indices (arrays, same length)
+    raw_gap      : scores[idx_a] - scores[idx_b] for kept pairs (signed)
+    """
+    idx_a = rng.integers(0, N, size=n_candidates)
+    idx_b = rng.integers(0, N, size=n_candidates)
+    same  = idx_a == idx_b
+    while same.any():
+        idx_b[same] = rng.integers(0, N, size=int(same.sum()))
+        same = idx_a == idx_b
+
+    raw_gap = scores[idx_a] - scores[idx_b]                         # signed (N_cands,)
+    keep    = np.abs(raw_gap) >= min_adv_gap
+    return idx_a[keep], idx_b[keep], raw_gap[keep]
+
+
 def generate_pref(pool, avi, args, rng):
     """
     Score all N pool segments, sample a fixed candidate pool of pairs, filter
@@ -332,20 +367,11 @@ def generate_pref(pool, avi, args, rng):
         n_cands = int(args.n_pairs * args.oversampling_factor) if args.n_pairs else N * 3
 
     print(f"\nSampling {n_cands:,} candidate pairs (N={N}, with replacement) …")
-    idx_a = rng.integers(0, N, size=n_cands)
-    idx_b = rng.integers(0, N, size=n_cands)
-    same  = idx_a == idx_b
-    while same.any():
-        idx_b[same] = rng.integers(0, N, size=int(same.sum()))
-        same = idx_a == idx_b
 
     # ── Step 3: filter by |gap| ─────────────────────────────────────────
-    raw_gap = scores[idx_a] - scores[idx_b]                         # signed (N_cands,)
-    keep    = np.abs(raw_gap) >= args.min_adv_gap
-    idx_a   = idx_a[keep]
-    idx_b   = idx_b[keep]
-    raw_gap = raw_gap[keep]
-    n_kept  = int(keep.sum())
+    idx_a, idx_b, raw_gap = sample_and_filter_pairs(
+        scores, N, n_cands, args.min_adv_gap, rng)
+    n_kept = len(idx_a)
 
     print(f"  After gap filter (|gap| ≥ {args.min_adv_gap}): "
           f"{n_kept:,} / {n_cands:,}  ({100 * n_kept / n_cands:.1f}%)")
@@ -1010,190 +1036,238 @@ def generate_seq_estop(pool, avi, args, rng):
 
 def generate_scalar(pool, avi, args, rng):
     """
-    Sliding-window scalar feedback → local pairwise preferences.
+    Per-trajectory temporal-subsegment scalar feedback → local hard preferences.
 
-    Each pool segment is truncated to segment_len steps and assigned an oracle
-    scalar score (rl_sum normalized to [-1,1]) plus Gaussian noise to simulate
-    a human evaluator.  A sliding window of window_size consecutive segments
-    defines one evaluation batch; within each window every pair (A, B) with
-    f_A > f_B + scalar_delta is extracted as a preference.
+    Every pool trajectory is processed independently — a preference NEVER
+    compares subsegments from two different trajectories (traj(A) == traj(B)
+    always).  Pipeline per trajectory:
+
+      1. Split the T-step trajectory into K overlapping temporal subsegments
+         of length h, starting at every multiple of sub_stride
+         (starts = arange(0, T-h+1, sub_stride)).
+      2. Score every subsegment with oracle rl_sum.
+      3. Normalize ALL subsegment scores GLOBALLY (1st/99th percentile over
+         the whole dataset, not per trajectory) to f ∈ [-1, 1].
+      4. Optionally add Gaussian noise (noise_std; default 0 → exact oracle).
+      5. Slide a comparison window of W consecutive subsegments (stride
+         cmp_stride) over the K subsegments. Within a window, candidate pairs
+         (i, j) are kept only if min_lag <= j-i <= max_lag (drops neighboring/
+         too-distant subsegments); at most max_pairs_per_window are sampled.
+      6. Each sampled pair becomes a hard preference: f_i vs f_j, discarding
+         only exact ties (|f_i - f_j| <= scalar_delta).
 
     Output schema matches pref labels so PMFeedbackBuffer loads it directly.
-    adv_scores stores [f_preferred, f_non_preferred] (noisy scalar values).
+    adv_scores stores [f_preferred, f_non_preferred].  traj_id/start_idx are
+    stored for provenance so cross-trajectory bugs are easy to catch.
     """
     obs    = pool["obs"]              # (N, T, obs_dim)
     action = pool["action"]           # (N, T, act_dim)
     reward = pool["reward"]           # (N, T)
     ckpt   = pool["checkpoint_step"]  # (N,)
     N, T   = obs.shape[:2]
-    h      = args.segment_len         # steps per scalar segment
-    W      = args.window_size         # sliding window width
+
+    h            = args.segment_len            # subsegment length
+    sub_stride   = args.sub_stride
+    W            = args.window_size            # subsegments per comparison window
+    cmp_stride   = args.cmp_stride
+    min_lag      = args.min_lag
+    max_lag      = args.max_lag
+    max_per_win  = args.max_pairs_per_window
+    noise_std    = args.noise_std
+    delta        = args.scalar_delta
 
     if h > T:
         raise ValueError(f"--segment-len {h} exceeds pool trajectory length T={T}")
-    if W > N:
-        raise ValueError(f"--window-size {W} exceeds pool size N={N}")
 
-    # Truncate each pool trajectory to h steps
-    seg_obs = obs[:, :h]      # (N, h, obs_dim)
-    seg_act = action[:, :h]   # (N, h, act_dim)
-    seg_rew = reward[:, :h]   # (N, h)
+    # ------------------------------------------------------------------
+    # Step 1: temporal subsegments (same start offsets for every trajectory)
+    # ------------------------------------------------------------------
+    starts = np.arange(0, T - h + 1, sub_stride)
+    K = len(starts)
+    if W > K:
+        raise ValueError(f"--window-size {W} exceeds K={K} subsegments "
+                          f"(T={T}, h={h}, sub_stride={sub_stride})")
 
-    # Oracle quality: rl_sum over h steps (same metric as all other feedback types)
-    oracle_scores = score_rl_sum(avi, seg_obs, seg_rew)   # (N,)
-    print(f"\n  Oracle rl_sum (h={h}): mean={oracle_scores.mean():.3f}  "
-          f"std={oracle_scores.std():.3f}  "
-          f"p1={np.percentile(oracle_scores,1):.3f}  "
-          f"p99={np.percentile(oracle_scores,99):.3f}")
+    print(f"\nTemporal subsegments: T={T}  h={h}  sub_stride={sub_stride}  "
+          f"→ K={K}  starts={starts.tolist()}")
 
-    # Normalize to [-1, 1] via 1st–99th percentile clipping
-    p1, p99 = np.percentile(oracle_scores, [1, 99])
+    seg_obs = np.stack([obs[:, s:s + h]    for s in starts], axis=1)  # (N, K, h, obs_dim)
+    seg_act = np.stack([action[:, s:s + h] for s in starts], axis=1)  # (N, K, h, act_dim)
+    seg_rew = np.stack([reward[:, s:s + h] for s in starts], axis=1)  # (N, K, h)
+
+    # ------------------------------------------------------------------
+    # Step 2-3: score every subsegment, normalize GLOBALLY to [-1, 1]
+    # ------------------------------------------------------------------
+    print(f"\nScoring {N * K:,} subsegments with oracle rl_sum (h={h}) …")
+    flat_obs   = seg_obs.reshape(N * K, h, seg_obs.shape[-1])
+    flat_rew   = seg_rew.reshape(N * K, h)
+    raw_scores = score_rl_sum(avi, flat_obs, flat_rew).reshape(N, K)   # (N, K)
+
+    print(f"  rl_sum: mean={raw_scores.mean():.3f}  std={raw_scores.std():.3f}  "
+          f"p1={np.percentile(raw_scores,1):.3f}  p99={np.percentile(raw_scores,99):.3f}")
+
+    p1, p99 = np.percentile(raw_scores, [1, 99])
     denom = p99 - p1
     if denom < 1e-8:
         print("  WARNING: oracle scores nearly constant; scalar values will be ~0.")
-        scalar_oracle = np.zeros(N, dtype=np.float32)
+        f_oracle = np.zeros((N, K), dtype=np.float32)
     else:
-        scalar_oracle = np.clip(
-            (oracle_scores - p1) / denom * 2.0 - 1.0, -1.0, 1.0
-        ).astype(np.float32)
-
-    # Add simulated human noise
-    noise = rng.normal(0.0, args.noise_std, size=N).astype(np.float32)
-    scalar_noisy = np.clip(scalar_oracle + noise, -1.0, 1.0)
-    print(f"  Noisy scalar (noise_std={args.noise_std}): "
-          f"mean={scalar_noisy.mean():.3f}  std={scalar_noisy.std():.3f}")
+        f_oracle = np.clip((raw_scores - p1) / denom * 2.0 - 1.0, -1.0, 1.0).astype(np.float32)
 
     # ------------------------------------------------------------------
-    # Sliding window: extract pairs
+    # Step 4: optional noise (default 0.0 → f == f_oracle exactly)
     # ------------------------------------------------------------------
-    n_windows = N - W + 1
-    print(f"\nExtracting pairs  (W={W}  δ={args.scalar_delta}  h={h}) …")
-    print(f"  {n_windows} windows  ×  up to {W*(W-1)//2} candidate pairs each")
+    if noise_std > 0:
+        noise = rng.normal(0.0, noise_std, size=(N, K)).astype(np.float32)
+        f = np.clip(f_oracle + noise, -1.0, 1.0)
+    else:
+        f = f_oracle
+    print(f"  Normalized scalar f (noise_std={noise_std}): "
+          f"mean={f.mean():.3f}  std={f.std():.3f}")
 
-    out_obs, out_act, out_rew, out_adv, out_ckpt = [], [], [], [], []
-    out_oracle_aligned = []   # True when oracle rl_sum agrees with scalar rank
-    n_candidates = 0
-    n_skipped    = 0
+    # ------------------------------------------------------------------
+    # Steps 5-6: comparison windows → lag-filtered candidate pairs → sample
+    #            → hard preference.  The candidate structure only depends on
+    #            K, W, cmp_stride, min_lag, max_lag — identical for every
+    #            trajectory — so this is fully vectorized over N.
+    # ------------------------------------------------------------------
+    win_offsets = list(range(0, K - W + 1, cmp_stride))
+    if not win_offsets:
+        raise ValueError(f"--window-size {W} exceeds K={K} subsegments (cmp_stride={cmp_stride})")
 
-    for i in range(n_windows):
-        win_f = scalar_noisy[i: i + W]   # (W,)
+    local_candidates = [(i, j) for i in range(W) for j in range(i + 1, W)
+                         if min_lag <= (j - i) <= max_lag]
+    if not local_candidates:
+        raise ValueError(f"No candidate pairs satisfy min_lag={min_lag} <= j-i <= "
+                          f"max_lag={max_lag} for window_size={W}")
+    n_cand   = len(local_candidates)
+    n_sample = min(max_per_win, n_cand)
 
-        for a in range(W):
-            for b in range(a + 1, W):    # upper triangle → each pair once
-                fa, fb = float(win_f[a]), float(win_f[b])
-                n_candidates += 1
+    print(f"\nComparison windows/trajectory : {len(win_offsets)}  (W={W}, cmp_stride={cmp_stride})")
+    print(f"Eligible candidate pairs/window: {n_cand}  (min_lag={min_lag}, max_lag={max_lag})")
+    print(f"Sampled pairs/window          : {n_sample}  (max_pairs_per_window={max_per_win})")
+    print(f"δ = {delta}  (pairs with |f_i-f_j| <= δ are discarded as ties)")
 
-                diff = fa - fb
-                if abs(diff) < args.scalar_delta:
-                    n_skipped += 1
-                    continue
+    out_obs, out_act, out_rew, out_adv = [], [], [], []
+    out_traj_id, out_start_idx, out_ckpt = [], [], []
+    n_ties_total = n_sampled_total = 0
+    traj_idx_all = np.arange(N)
 
-                # preferred = segment with higher scalar value
-                if diff > 0:
-                    pi, ni = i + a, i + b
-                    f_pref, f_npref = fa, fb
-                else:
-                    pi, ni = i + b, i + a
-                    f_pref, f_npref = fb, fa
+    for w_off in win_offsets:
+        cand_i = np.array([w_off + i for i, j in local_candidates])   # (n_cand,)
+        cand_j = np.array([w_off + j for i, j in local_candidates])
 
-                out_obs.append(np.stack([seg_obs[pi], seg_obs[ni]], axis=0))
-                out_act.append(np.stack([seg_act[pi], seg_act[ni]], axis=0))
-                out_rew.append(np.stack([seg_rew[pi], seg_rew[ni]], axis=0))
-                out_adv.append([f_pref, f_npref])
-                out_ckpt.append([int(ckpt[pi]), int(ckpt[ni])])
-                out_oracle_aligned.append(oracle_scores[pi] > oracle_scores[ni])
+        # Independent per-trajectory sample of n_sample of n_cand candidates,
+        # without replacement, via argsort of per-row random keys.
+        keys  = rng.random((N, n_cand))
+        order = np.argsort(keys, axis=1)[:, :n_sample]      # (N, n_sample)
 
-        if (i + 1) % 5000 == 0 or i == n_windows - 1:
-            print(f"  [{i+1:>6}/{n_windows}]  pairs={len(out_obs)}"
-                  f"  skipped_δ={n_skipped}")
+        sel_i = cand_i[order]        # (N, n_sample)  subsegment index i (into K)
+        sel_j = cand_j[order]        # (N, n_sample)  subsegment index j (into K)
 
-        if args.n_pairs is not None and len(out_obs) >= args.n_pairs:
-            print(f"  Reached n_pairs={args.n_pairs}, stopping early.")
-            break
+        f_i = f[traj_idx_all[:, None], sel_i]   # (N, n_sample)
+        f_j = f[traj_idx_all[:, None], sel_j]
 
-    # Truncate to cap
-    if args.n_pairs is not None and len(out_obs) > args.n_pairs:
-        out_obs            = out_obs[:args.n_pairs]
-        out_act            = out_act[:args.n_pairs]
-        out_rew            = out_rew[:args.n_pairs]
-        out_adv            = out_adv[:args.n_pairs]
-        out_ckpt           = out_ckpt[:args.n_pairs]
-        out_oracle_aligned = out_oracle_aligned[:args.n_pairs]
+        diff     = f_i - f_j
+        tie_mask = np.abs(diff) <= delta
+        n_ties_total    += int(tie_mask.sum())
+        n_sampled_total += diff.size
 
-    M = len(out_obs)
+        pref_is_i = diff > 0
+        pref_idx  = np.where(pref_is_i, sel_i, sel_j)      # (N, n_sample)
+        nonp_idx  = np.where(pref_is_i, sel_j, sel_i)
+        f_pref    = np.where(pref_is_i, f_i, f_j)
+        f_nonp    = np.where(pref_is_i, f_j, f_i)
+
+        rows, cols = np.where(~tie_mask)
+        if len(rows) == 0:
+            continue
+
+        pi = pref_idx[rows, cols]     # subsegment index within K (preferred)
+        ni = nonp_idx[rows, cols]     # subsegment index within K (non-preferred)
+
+        out_obs.append(np.stack([seg_obs[rows, pi], seg_obs[rows, ni]], axis=1))
+        out_act.append(np.stack([seg_act[rows, pi], seg_act[rows, ni]], axis=1))
+        out_rew.append(np.stack([seg_rew[rows, pi], seg_rew[rows, ni]], axis=1))
+        out_adv.append(np.stack([f_pref[rows, cols], f_nonp[rows, cols]], axis=1))
+        out_traj_id.append(rows.astype(np.int64))
+        out_start_idx.append(np.stack([starts[pi], starts[ni]], axis=1).astype(np.int64))
+        out_ckpt.append(np.stack([ckpt[rows], ckpt[rows]], axis=1).astype(np.int64))
+
+    M = sum(a.shape[0] for a in out_obs)
     if M == 0:
-        print("\nERROR: 0 pairs generated.")
-        print("  Options: lower --scalar-delta, increase --window-size or --noise-std")
+        print("\nERROR: 0 pairs generated (every candidate was an exact tie).")
+        print("  Options: lower --scalar-delta or check the oracle scoring.")
         return
 
-    obs_out  = np.stack(out_obs,  axis=0).astype(np.float32)   # (M, 2, h, obs_dim)
-    act_out  = np.stack(out_act,  axis=0).astype(np.float32)
-    rew_out  = np.stack(out_rew,  axis=0).astype(np.float32)
-    adv_out  = np.array(out_adv,  dtype=np.float32)            # (M, 2) noisy scalars
-    ckpt_out = np.array(out_ckpt, dtype=np.int64)
+    obs_out   = np.concatenate(out_obs,       axis=0).astype(np.float32)  # (M, 2, h, obs_dim)
+    act_out   = np.concatenate(out_act,       axis=0).astype(np.float32)
+    rew_out   = np.concatenate(out_rew,       axis=0).astype(np.float32)
+    adv_out   = np.concatenate(out_adv,       axis=0).astype(np.float32)  # (M, 2)
+    traj_out  = np.concatenate(out_traj_id,   axis=0)                     # (M,)
+    start_out = np.concatenate(out_start_idx, axis=0)                     # (M, 2)
+    ckpt_out  = np.concatenate(out_ckpt,      axis=0)                     # (M, 2)
+
+    # Sanity: every pair must come from a single trajectory.
+    assert np.array_equal(ckpt_out[:, 0], ckpt[traj_out]), "cross-trajectory checkpoint mismatch"
+
+    # ------------------------------------------------------------------
+    # Optional cap: random subsample (uniform over trajectories/pairs)
+    # ------------------------------------------------------------------
+    if args.n_pairs is not None and M > args.n_pairs:
+        keep      = rng.permutation(M)[:args.n_pairs]
+        obs_out   = obs_out[keep]
+        act_out   = act_out[keep]
+        rew_out   = rew_out[keep]
+        adv_out   = adv_out[keep]
+        traj_out  = traj_out[keep]
+        start_out = start_out[keep]
+        ckpt_out  = ckpt_out[keep]
+        M = args.n_pairs
+        print(f"\nCapped to --n-pairs={args.n_pairs} (random subsample)")
 
     # ------------------------------------------------------------------
     # Statistics
     # ------------------------------------------------------------------
     gaps = adv_out[:, 0] - adv_out[:, 1]         # always > 0
-
-    # Oracle alignment: fraction where rl_sum(preferred) > rl_sum(non-preferred)
-    oracle_aligned = float(np.mean(out_oracle_aligned))
-
-    # Per-window pair count (only windows actually processed)
-    n_windows_processed = min(n_windows, i + 1) if n_windows > 0 else 0
-    avg_pairs_per_win   = M / max(1, n_windows_processed)
-
+    n_unique_traj = len(np.unique(traj_out))
     pct = [5, 25, 50, 75, 95]
 
     print(f"\n{'─'*60}")
     print(f"Scalar feedback statistics")
     print(f"{'─'*60}")
-    print(f"  Pool segments    : {N}  (h={h} steps each)")
-    print(f"  Windows processed: {n_windows_processed} / {n_windows}  (W={W})")
+    print(f"  Trajectories total     : {N}")
+    print(f"  Trajectories contributing pairs : {n_unique_traj}")
+    print(f"  Subsegments/trajectory : K={K}  (h={h}, sub_stride={sub_stride})")
+    print(f"  Candidates/window      : {n_cand}  →  sampled {n_sample}")
+    print(f"  Ties discarded (|Δf|<={delta}): {n_ties_total}"
+          f"  ({100*n_ties_total/max(1,n_sampled_total):.1f}% of sampled candidates)")
+    print(f"  Pairs kept             : {M}  (avg {M/max(1,N):.2f} per trajectory)")
 
-    print(f"\n  Oracle rl_sum (h={h} steps, before normalization):")
-    print(f"    mean={oracle_scores.mean():.3f}  std={oracle_scores.std():.3f}  "
-          f"p1={np.percentile(oracle_scores,1):.3f}  "
-          f"p99={np.percentile(oracle_scores,99):.3f}")
+    print(f"\n  Normalized scalar f (all subsegments, before pairing):")
+    f_vals = np.percentile(f_oracle, pct)
+    print(f"    mean={f_oracle.mean():.3f}  std={f_oracle.std():.3f}")
+    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, f_vals))}")
 
-    print(f"\n  Normalized scalar oracle ([-1,1]):")
-    so_vals = np.percentile(scalar_oracle, pct)
-    print(f"    mean={scalar_oracle.mean():.3f}  std={scalar_oracle.std():.3f}")
-    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, so_vals))}")
-
-    print(f"\n  Noisy scalar (noise_std={args.noise_std}):")
-    sn_vals = np.percentile(scalar_noisy, pct)
-    print(f"    mean={scalar_noisy.mean():.3f}  std={scalar_noisy.std():.3f}")
-    print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, sn_vals))}")
-
-    print(f"\n  Pair generation:")
-    print(f"    Total candidates : {n_candidates}")
-    print(f"    Skipped (|Δf|<{args.scalar_delta}): {n_skipped}"
-          f"  ({100*n_skipped/max(1,n_candidates):.1f}%)")
-    print(f"    Pairs kept       : {M}"
-          f"  (avg {avg_pairs_per_win:.1f} per window)")
-
-    print(f"\n  Scalar gap Δf (preferred − non-preferred f):")
     gap_vals = np.percentile(gaps, pct)
+    print(f"\n  Scalar gap Δf (preferred − non-preferred f):")
     print(f"    mean={gaps.mean():.3f}  std={gaps.std():.3f}  "
           f"min={gaps.min():.3f}  max={gaps.max():.3f}")
     print(f"    {'  '.join(f'p{p}={v:.3f}' for p, v in zip(pct, gap_vals))}")
-
-    print(f"\n  Oracle alignment (rl_sum agrees with scalar rank):")
-    print(f"    pref rl_sum > non-pref rl_sum : {100*oracle_aligned:.1f}% of pairs")
     print(f"{'─'*60}")
 
     save_npz(args.out,
              obs=obs_out, action=act_out, reward=rew_out,
              adv_scores=adv_out, checkpoint_step=ckpt_out,
-             n_choice_structures=np.int64(n_windows_processed))
+             traj_id=traj_out, start_idx=start_out,
+             n_choice_structures=np.int64(N))
 
     print(f"\nSaved → {args.out}")
     print(f"  obs              : {obs_out.shape}"
           f"  ([0]=preferred, [1]=non-preferred)  h={h}")
-    print(f"  adv_scores       : {adv_out.shape}  (noisy scalar values f ∈ [-1,1])")
-    print(f"  n_choice_structures: {n_windows_processed}  (rating windows; pairs={M})")
+    print(f"  adv_scores       : {adv_out.shape}  (scalar values f ∈ [-1,1])")
+    print(f"  traj_id          : {traj_out.shape}  start_idx: {start_out.shape}")
+    print(f"  n_choice_structures: {N}  (trajectories; pairs={M})")
     print(f"\nTrain with:  dataset: PMFeedbackBuffer")
 
 
@@ -1357,7 +1431,8 @@ def main():
     parser.add_argument("--n-pairs", type=int, default=None,
                         help="Number of pairs/sets to save (default: all). "
                              "pref: top-n by gap from the sorted candidate pool. "
-                             "corr/demo/seq_estop/scalar: stop early once reached.")
+                             "corr/demo/seq_estop: stop early once reached. "
+                             "scalar: random subsample after generating all pairs.")
     parser.add_argument("--skip-expert", action="store_true", default=False,
                         help="Remove tier-0 (expert, checkpoint_step==0) segments "
                              "from the pool before generating feedback. Recommended "
@@ -1404,15 +1479,32 @@ def main():
     parser.add_argument("--horizon", type=int, default=10,
                         help="Window length h for seq-estop pairs (default: 10)")
 
-    # Scalar-feedback specific
-    parser.add_argument("--segment-len",  type=int,   default=8,
-                        help="Steps per scalar feedback segment (default: 8)")
-    parser.add_argument("--window-size",  type=int,   default=10,
-                        help="Sliding window size W (default: 10)")
+    # Scalar-feedback specific (per-trajectory temporal subsegments)
+    parser.add_argument("--segment-len",  type=int,   default=16,
+                        help="Subsegment length h in steps (default: 16)")
+    parser.add_argument("--sub-stride",   type=int,   default=12,
+                        help="Stride between subsegment start offsets (default: 12); "
+                             "starts = arange(0, T-h+1, sub_stride)")
+    parser.add_argument("--window-size",  type=int,   default=5,
+                        help="Subsegments K per comparison window W (default: 5)")
+    parser.add_argument("--cmp-stride",   type=int,   default=5,
+                        help="Stride between comparison windows over the K "
+                             "subsegments of a trajectory (default: 5)")
+    parser.add_argument("--min-lag",      type=int,   default=2,
+                        help="Minimum subsegment index gap j-i for a candidate "
+                             "pair (default: 2; drops neighboring subsegments)")
+    parser.add_argument("--max-lag",      type=int,   default=4,
+                        help="Maximum subsegment index gap j-i for a candidate "
+                             "pair (default: 4)")
+    parser.add_argument("--max-pairs-per-window", type=int, default=4,
+                        help="Cap on candidate pairs sampled per comparison "
+                             "window, per trajectory (default: 4)")
     parser.add_argument("--noise-std",    type=float, default=0.0,
-                        help="Std of Gaussian noise added to oracle scalar (default: 0.0, no noise)")
-    parser.add_argument("--scalar-delta", type=float, default=0.01,
-                        help="Indifference threshold δ: skip pairs with |f_A-f_B|<δ (default: 0.01)")
+                        help="Std of Gaussian noise added to the normalized "
+                             "oracle scalar (default: 0.0, exact oracle score)")
+    parser.add_argument("--scalar-delta", type=float, default=0.0,
+                        help="Indifference threshold δ: discard a pair only "
+                             "when |f_i-f_j| <= δ (default: 0.0, exact ties only)")
 
     # Credit-assignment specific
     parser.add_argument("--subsegment-len", type=int, default=12,
@@ -1437,10 +1529,14 @@ def main():
     if args.type == "seq_estop":
         print(f"  horizon h    : {args.horizon}")
     if args.type == "scalar":
-        print(f"  segment_len  : {args.segment_len}")
-        print(f"  window_size  : {args.window_size}")
-        print(f"  noise_std    : {args.noise_std}")
-        print(f"  scalar_delta : {args.scalar_delta}")
+        print(f"  segment_len (h)      : {args.segment_len}")
+        print(f"  sub_stride           : {args.sub_stride}")
+        print(f"  window_size (W)      : {args.window_size}")
+        print(f"  cmp_stride           : {args.cmp_stride}")
+        print(f"  min_lag / max_lag    : {args.min_lag} / {args.max_lag}")
+        print(f"  max_pairs_per_window : {args.max_pairs_per_window}")
+        print(f"  noise_std            : {args.noise_std}")
+        print(f"  scalar_delta         : {args.scalar_delta}")
     if args.type == "credit_assignment":
         print(f"  subsegment_len: {args.subsegment_len}")
     print("=" * 65)

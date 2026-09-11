@@ -130,8 +130,9 @@ case "$FEEDBACK_TYPE" in
         EXTRA_ARGS=(--rho 0.8 --lam 2.0 --kappa 1.9101 --horizon 4 --skip-expert)
         ;;
     scalar)
-        EXTRA_ARGS=(--segment-len 8 --window-size 10 --noise-std 0.0 \
-                    --scalar-delta 0.01 --skip-expert)
+        EXTRA_ARGS=(--segment-len 16 --sub-stride 12 --window-size 5 --cmp-stride 5 \
+                    --min-lag 2 --max-lag 4 --max-pairs-per-window 4 \
+                    --noise-std 0.0 --scalar-delta 0.0 --skip-expert)
         ;;
     credit_assignment)
         EXTRA_ARGS=(--subsegment-len 12 --skip-expert)

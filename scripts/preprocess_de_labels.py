@@ -9,8 +9,10 @@ seq_estop   : stratified sampling — keep exactly 1 pair per source trajectory
               (removes within-trajectory duplication), then shuffle.
               713k pairs → ~161k (one per traj), random order.
 
-scalar      : shuffle only — already <1 pair per trajectory on average.
-              Pool ordering bias is removed; diversity is preserved.
+scalar      : shuffle only — each source trajectory already contributes a
+              small, bounded number of pairs (max_pairs_per_window per
+              trajectory) by construction, so no further stratification is
+              needed; shuffle only removes trajectory-order bias.
 
 credit      : shuffle only — exactly 1 example per trajectory by construction.
               Pool ordering bias is removed.

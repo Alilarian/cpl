@@ -40,10 +40,15 @@
 #   LAM             default: 2.0
 #   KAPPA           default: 1.9101 (tuned; p10 of peak-H with rho=0.8)
 #   HORIZON         default: 4      (seq_estop window h; [h-1, T-h]=[3,46] covers early stops)
-#   SEGMENT_LEN     default: 8      (scalar: steps per scalar feedback segment)
-#   WINDOW_SIZE     default: 10     (scalar: sliding window width)
-#   NOISE_STD       default: 0.1    (scalar: Gaussian noise std on oracle scalar)
-#   SCALAR_DELTA    default: 0.0    (scalar: indifference threshold δ)
+#   SEGMENT_LEN     default: 16     (scalar: subsegment length h)
+#   SUB_STRIDE      default: 12     (scalar: stride between subsegment starts)
+#   WINDOW_SIZE     default: 5      (scalar: subsegments K per comparison window)
+#   CMP_STRIDE      default: 5      (scalar: stride between comparison windows)
+#   MIN_LAG         default: 2      (scalar: min subsegment index gap j-i)
+#   MAX_LAG         default: 4      (scalar: max subsegment index gap j-i)
+#   MAX_PAIRS_PER_WINDOW default: 4 (scalar: cap on sampled pairs per window)
+#   NOISE_STD       default: 0.0    (scalar: Gaussian noise std on normalized oracle scalar)
+#   SCALAR_DELTA    default: 0.0    (scalar: indifference threshold δ, exact ties only)
 #   SUBSEGMENT_LEN  default: 12     (credit_assignment: subsegment length k)
 
 #SBATCH --nodes=1
@@ -85,9 +90,14 @@ RHO="${RHO:-0.8}"
 LAM="${LAM:-2.0}"
 KAPPA="${KAPPA:-1.9101}"
 HORIZON="${HORIZON:-4}"
-SEGMENT_LEN="${SEGMENT_LEN:-8}"
-WINDOW_SIZE="${WINDOW_SIZE:-10}"
-NOISE_STD="${NOISE_STD:-0.1}"
+SEGMENT_LEN="${SEGMENT_LEN:-16}"
+SUB_STRIDE="${SUB_STRIDE:-12}"
+WINDOW_SIZE="${WINDOW_SIZE:-5}"
+CMP_STRIDE="${CMP_STRIDE:-5}"
+MIN_LAG="${MIN_LAG:-2}"
+MAX_LAG="${MAX_LAG:-4}"
+MAX_PAIRS_PER_WINDOW="${MAX_PAIRS_PER_WINDOW:-4}"
+NOISE_STD="${NOISE_STD:-0.0}"
 SCALAR_DELTA="${SCALAR_DELTA:-0.0}"
 SUBSEGMENT_LEN="${SUBSEGMENT_LEN:-12}"
 
@@ -136,7 +146,10 @@ case "$FEEDBACK_TYPE" in
         EXTRA_ARGS=(--rho "$RHO" --lam "$LAM" --kappa "$KAPPA" --horizon "$HORIZON" --n-pairs "$N_PAIRS" --skip-expert)
         ;;
     scalar)
-        EXTRA_ARGS=(--segment-len "$SEGMENT_LEN" --window-size "$WINDOW_SIZE" \
+        EXTRA_ARGS=(--segment-len "$SEGMENT_LEN" --sub-stride "$SUB_STRIDE" \
+                    --window-size "$WINDOW_SIZE" --cmp-stride "$CMP_STRIDE" \
+                    --min-lag "$MIN_LAG" --max-lag "$MAX_LAG" \
+                    --max-pairs-per-window "$MAX_PAIRS_PER_WINDOW" \
                     --noise-std "$NOISE_STD" --scalar-delta "$SCALAR_DELTA" \
                     --n-pairs "$N_PAIRS" --skip-expert)
         ;;

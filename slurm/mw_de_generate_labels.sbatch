@@ -6,7 +6,7 @@
 #   Task 2 — corr             expert rollout per segment; batched scoring (~6h)
 #   Task 3 — demo             K rollouts per segment; batched scoring    (~25h)
 #   Task 4 — seq_estop        V(s) scoring + estop simulation             (~4h)
-#   Task 5 — scalar           V(s) scoring + sliding window               (~4h)
+#   Task 5 — scalar           V(s) scoring + per-trajectory subsegment pairing (~4h)
 #   Task 6 — credit_assignment V(s) scoring + window extraction          (~4h)
 #
 # Each type produces ONE full label file sorted by oracle quality DESC.
@@ -19,7 +19,7 @@
 #   corr   : ~41k pairs  (one expert rollout per pool segment)
 #   demo   : ~41k demos  (K=7 rollouts per pool segment)
 #   seq_estop : ~100k–1M decision-point pairs (depends on kappa/rho/lam)
-#   scalar : 100k pairs  (capped; sliding window over pool)
+#   scalar : ~164k pairs (up to 4/trajectory; capped to 100k), per-trajectory subsegments
 #   credit : ~41k examples (one per pool segment, C=31 candidate windows)
 #
 # Memory note: credit_assignment is the heaviest — the output array
@@ -47,6 +47,8 @@
 #   ORACLE_SEED       default: seed-1  (subdirectory used as oracle for label scoring)
 #   POOL_DIR          default: /scratch/general/vast/u1472210/mw_de_pool
 #   OUTPUT_DIR        default: /scratch/general/vast/u1472210/mw_de_labels
+#   KAPPA             default: 1.4    (seq_estop stop threshold κ — tune per env with
+#                                      mw_tune_kappa.sbatch and pass the recommendation here)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -77,6 +79,7 @@ ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
 ORACLE_SEED="${ORACLE_SEED:-seed-1}"
 POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
+KAPPA="${KAPPA:-1.4}"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
 [[ "$POOL_DIR"         != /* ]] && POOL_DIR="${REPO_ROOT}/${POOL_DIR}"
@@ -97,6 +100,7 @@ echo "ORACLE_SEED     = ${ORACLE_SEED}"
 echo "POOL_PATH       = ${POOL_PATH}"
 echo "ORACLE_DIR      = ${ORACLE_DIR}"
 echo "OUTPUT_DIR      = ${OUTPUT_DIR}"
+echo "KAPPA           = ${KAPPA}  (seq_estop only)"
 echo "=============================="
 
 if [[ ! -f "$POOL_PATH" ]]; then
@@ -163,7 +167,7 @@ case "$FEEDBACK_TYPE" in
             --run-dir      "$ORACLE_DIR" \
             --rho          0.8 \
             --lam          2.0 \
-            --kappa        1.4 \
+            --kappa        "$KAPPA" \
             --horizon      10 \
             --mcmc-samples 32 \
             --output-dir   "$OUTPUT_DIR" \
@@ -171,13 +175,20 @@ case "$FEEDBACK_TYPE" in
         ;;
 
     scalar)
-        # Sliding window over pool; oracle scores each segment.  Cap at 100k pairs.
+        # Per-trajectory temporal subsegments; oracle scores each subsegment.
+        # Up to max-pairs-per-window hard preferences per trajectory. Cap at 100k pairs.
         python3 "${REPO_ROOT}/scripts/generate_scalar_labels.py" \
             --pool-path    "$POOL_PATH" \
             --run-dir      "$ORACLE_DIR" \
-            --segment-len  20 \
-            --window-size  10 \
-            --noise-std    0.1 \
+            --segment-len  16 \
+            --sub-stride   12 \
+            --window-size  5 \
+            --cmp-stride   5 \
+            --min-lag      2 \
+            --max-lag      4 \
+            --max-pairs-per-window 4 \
+            --noise-std    0.0 \
+            --scalar-delta 0.0 \
             --n-pairs      100000 \
             --mcmc-samples 32 \
             --output-dir   "$OUTPUT_DIR" \

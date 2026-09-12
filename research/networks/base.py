@@ -80,6 +80,10 @@ class ActorPolicy(ModuleContainer):
     CONTAINERS = ["encoder", "actor"]
 
 
+class RewardPolicy(ModuleContainer):
+    CONTAINERS = ["reward"]
+
+
 class ActorCriticPolicy(ModuleContainer):
     CONTAINERS = ["encoder", "actor", "critic"]
 

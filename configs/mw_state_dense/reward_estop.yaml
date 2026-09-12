@@ -1,0 +1,60 @@
+
+alg: RewardEstopCPL
+alg_kwargs:
+  discount: 0.99         # matches estop_cpl.yaml's EstopCPL discount -- keep discount-matched
+  beta_prime: 1.0        # matches estop_cpl.yaml's beta_prime; plays the role contrastive_bias would
+  l2_coeff: 0.0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+
+network: RewardPolicy
+network_kwargs:
+  reward_class: ContinuousMLPCritic
+  reward_kwargs:
+    ensemble_size: 1
+  dropout: 0.25   # matches the actor's dropout in estop_cpl.yaml
+  act: ["import", "torch.nn", "ReLU"]
+  hidden_layers: [512, 512]
+  ortho_init: True
+
+checkpoint: null
+
+# eval_env is required even though this algorithm has no actor to roll out --
+# Config.get_eval_env_fn()/get_spaces() always construct a real env to derive
+# observation/action spaces. eval_fn: null below skips the (nonexistent) rollout.
+eval_env: mw_drawer-open-v2
+
+# estop_labels.npz: (M, 2, T, ...) with stop_time (M,). Index 0 = halt prefix
+# (padded tail repeats the last (s_tau, a_tau)), index 1 = full trajectory. Both
+# sides are scored unmasked over all T steps by RewardEstopCPL, exactly as
+# EstopCPL scores them -- an additive shift in r_theta cancels in the logit
+# difference because both sides are length T.
+dataset: EstopBuffer
+dataset_kwargs:
+  path: datasets/mw/estop_labels/mw_drawer-open-v2/estop_labels.npz
+  batch_size: 96
+  reward_scale: 1.0
+  reward_shift: 0.0
+  split: train
+  val_frac: 0.1
+
+validation_dataset_kwargs:
+  split: val
+  val_frac: 0.1
+
+processor: null
+
+trainer_kwargs:
+  total_steps: 100000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 2000
+  eval_fn: null
+  loss_metric: reward_loss
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

@@ -38,6 +38,8 @@ class CorrBuffer(torch.utils.data.IterableDataset):
         segment_length:    if set, randomly crop each trajectory to this length
         reward_scale:      scalar multiplier applied to rewards
         reward_shift:      scalar offset applied to rewards after scaling
+        split:             "all" (default, preserves existing behaviour), "train", or "val"
+        val_frac:          fraction of comparisons held out for "val" when split != "all"
     """
 
     def __init__(
@@ -51,14 +53,25 @@ class CorrBuffer(torch.utils.data.IterableDataset):
         segment_length: Optional[int] = None,
         reward_scale: float = 1.0,
         reward_shift: float = 0.0,
+        split: str = "all",
+        val_frac: float = 0.1,
     ):
         assert path is not None, "Must provide path to corr_labels.npz"
+        assert split in ("all", "train", "val")
 
         with open(path, "rb") as f:
             raw = np.load(f)
             obs    = raw["obs"]        # (N, 2, T, obs_dim)
             action = raw["action"]     # (N, 2, T, act_dim)
             reward = raw["reward"]     # (N, 2, T)
+
+        if split != "all":
+            N_full = obs.shape[0]
+            perm = np.random.RandomState(0).permutation(N_full)
+            n_val = int(N_full * val_frac)
+            split_idx = perm[n_val:] if split == "train" else perm[:n_val]
+            split_idx = np.sort(split_idx)
+            obs, action, reward = obs[split_idx], action[split_idx], reward[split_idx]
 
         N = obs.shape[0]
         if capacity is not None and capacity < N:

@@ -23,8 +23,11 @@ class FeedbackBuffer(torch.utils.data.IterableDataset):
         label_key: str = "label",
         reward_scale: float = 1.0,
         reward_shift: float = 0.0,
+        split: str = "all",
+        val_frac: float = 0.1,
     ):
         # assert mode in {"rank", "comparison", "score"}
+        assert split in ("all", "train", "val")
         self.mode = mode
         self.label_key = label_key
         self.discount = discount
@@ -43,6 +46,14 @@ class FeedbackBuffer(torch.utils.data.IterableDataset):
             # Determine if we are dealing with an old format dataset
             # If so, convert to the new format by stacking.
             if "action_1" in data:
+                if split != "all":
+                    # Split on pairs (pre-concatenation) so a comparison pair never
+                    # straddles train/val.
+                    n_pairs = data["action_1"].shape[0]
+                    perm = np.random.RandomState(0).permutation(n_pairs)
+                    n_val = int(n_pairs * val_frac)
+                    split_idx = np.sort(perm[n_val:] if split == "train" else perm[:n_val])
+                    data = utils.get_from_batch(data, split_idx)
                 label = data[self.label_key]
                 data = {
                     "obs": utils.concatenate(data["obs_1"], data["obs_2"]),
@@ -50,6 +61,16 @@ class FeedbackBuffer(torch.utils.data.IterableDataset):
                     "reward": utils.concatenate(data["reward_1"], data["reward_2"]),
                 }
                 data[self.label_key] = utils.concatenate(1 - label, label)
+            elif split != "all":
+                # New-format (single-segment) dataset: split on the segment index directly.
+                # NOTE: for mode="comparison" this can in principle split a positional pair
+                # (index i / i+size) across train/val; "rank"/"score" modes (the only ones
+                # currently used) draw/define pairs independently so this is safe there.
+                n_segments = data["action"].shape[0]
+                perm = np.random.RandomState(0).permutation(n_segments)
+                n_val = int(n_segments * val_frac)
+                split_idx = np.sort(perm[n_val:] if split == "train" else perm[:n_val])
+                data = utils.get_from_batch(data, split_idx)
 
             # If we are dealing with a new format dataset
             dataset_size = data["action"].shape[0]  # The number of segments in the dataset

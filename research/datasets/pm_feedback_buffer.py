@@ -106,6 +106,8 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
     batch_size : reference trajectories per batch
     capacity   : max examples to load (None = all)
     action_eps : clip actions to [-1+eps, 1-eps]
+    split      : "all" (default, preserves existing behaviour), "train", or "val"
+    val_frac   : fraction of reference trajectories held out for "val" when split != "all"
     """
 
     def __init__(
@@ -116,7 +118,10 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
         batch_size: int = 32,
         capacity: int = None,
         action_eps: float = 1e-5,
+        split: str = "all",
+        val_frac: float = 0.1,
     ):
+        assert split in ("all", "train", "val")
         # Use mmap_mode='r' so numpy memory-maps individual arrays (works for
         # uncompressed .npz only).  When capacity is set this lets us read only
         # the first `capacity` rows without decompressing the full file first,
@@ -127,13 +132,20 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
         except ValueError:
             data = np.load(path)    # fallback: compressed npz, load fully
 
-        N = data["obs"].shape[0]
-        cap = min(capacity, N) if capacity is not None else N
+        N_total = data["obs"].shape[0]
+        if split != "all":
+            perm = np.random.RandomState(0).permutation(N_total)
+            n_val = int(N_total * val_frac)
+            split_idx = np.sort(perm[n_val:] if split == "train" else perm[:n_val])
+        else:
+            split_idx = np.arange(N_total)
 
-        obs        = np.array(data["obs"][:cap],        dtype=np.float32)
-        action     = np.array(data["action"][:cap],     dtype=np.float32)
-        chosen_idx = np.array(data["chosen_idx"][:cap], dtype=np.int64)
-        N = cap
+        N = min(capacity, len(split_idx)) if capacity is not None else len(split_idx)
+        cap_idx = split_idx[:N]
+
+        obs        = np.array(data["obs"][cap_idx],        dtype=np.float32)
+        action     = np.array(data["action"][cap_idx],     dtype=np.float32)
+        chosen_idx = np.array(data["chosen_idx"][cap_idx], dtype=np.int64)
 
         lim    = 1.0 - action_eps
         action = np.clip(action, -lim, lim)

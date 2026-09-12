@@ -1,0 +1,64 @@
+
+alg: RewardCPL
+alg_kwargs:
+  contrastive_bias: 1.0   # unbiased -- see reward_cpl.py docstring for why bias!=1.0 doesn't transfer from ARIC
+  discount: 1.0            # matches scalar_cpl.yaml (DemoCPL applies no discount)
+  l2_coeff: 0.0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+
+network: RewardPolicy
+network_kwargs:
+  reward_class: ContinuousMLPCritic
+  reward_kwargs:
+    ensemble_size: 1
+  dropout: 0.25   # matches the actor's dropout in scalar_cpl.yaml
+  act: ["import", "torch.nn", "ReLU"]
+  hidden_layers: [512, 512]
+  ortho_init: True
+
+checkpoint: null
+
+# eval_env is required even though this algorithm has no actor to roll out --
+# Config.get_eval_env_fn()/get_spaces() always construct a real env to derive
+# observation/action spaces. eval_fn: null below skips the (nonexistent) rollout.
+eval_env: mw_drawer-open-v2
+
+# scalar_labels.npz is within-trajectory sub-segment pairs (K=2, CorrBuffer format).
+# NOTE (shift-identifiability): these pairs are drawn within the same trajectory
+# only, so this loss is invariant to adding a per-trajectory constant to r_theta --
+# unlike ARIC's alpha*log(pi), which cannot absorb such a shift. Expect this type
+# to show high traj_r_var and to degrade more in phase-2 RL than pairwise/demo.
+# Has by far the most comparisons/trajectory of any type -- likely needs more
+# total_steps than the other K=2 types; tune from validation loss, not a shared default.
+dataset: CorrBuffer
+dataset_kwargs:
+  path: datasets/mw/scalar_labels/mw_drawer-open-v2/scalar_labels.npz
+  batch_size: 96
+  segment_length: null
+  reward_scale: 1.0
+  reward_shift: 0.0
+  capacity: null
+  split: train
+  val_frac: 0.1
+
+validation_dataset_kwargs:
+  split: val
+  val_frac: 0.1
+
+processor: null
+
+trainer_kwargs:
+  total_steps: 200000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 2000
+  eval_fn: null
+  loss_metric: reward_loss
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

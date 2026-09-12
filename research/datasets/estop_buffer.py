@@ -35,6 +35,8 @@ class EstopBuffer(torch.utils.data.IterableDataset):
         action_eps        : clips actions to [-1+eps, 1-eps] (default 1e-5)
         reward_scale      : scalar multiplier applied to rewards
         reward_shift      : scalar offset applied to rewards after scaling
+        split             : "all" (default, preserves existing behaviour), "train", or "val"
+        val_frac          : fraction of pairs held out for "val" when split != "all"
     """
 
     def __init__(
@@ -47,8 +49,11 @@ class EstopBuffer(torch.utils.data.IterableDataset):
         action_eps: float = 1e-5,
         reward_scale: float = 1.0,
         reward_shift: float = 0.0,
+        split: str = "all",
+        val_frac: float = 0.1,
     ):
         assert path is not None, "Must provide path to estop_labels.npz"
+        assert split in ("all", "train", "val")
 
         with open(path, "rb") as f:
             raw = np.load(f)
@@ -56,6 +61,14 @@ class EstopBuffer(torch.utils.data.IterableDataset):
             action    = raw["action"]     # (N, 2, T, act_dim)
             reward    = raw["reward"]     # (N, 2, T)
             stop_time = raw["stop_time"]  # (N,)  int32
+
+        if split != "all":
+            N_full = obs.shape[0]
+            perm = np.random.RandomState(0).permutation(N_full)
+            n_val = int(N_full * val_frac)
+            split_idx = perm[n_val:] if split == "train" else perm[:n_val]
+            split_idx = np.sort(split_idx)
+            obs, action, reward, stop_time = obs[split_idx], action[split_idx], reward[split_idx], stop_time[split_idx]
 
         N = obs.shape[0]
         if capacity is not None and capacity < N:

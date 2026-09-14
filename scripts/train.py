@@ -36,15 +36,27 @@ def try_wandb_setup(path, config):
     run_name = os.getenv("WANDB_RUN_NAME", os.path.basename(path))
     group    = os.getenv("WANDB_GROUP", None)
 
-    run = wandb.init(
-        project=project_name,
-        name=run_name,
-        group=group,
-        config=config.flatten(separator="-"),
-        dir=wandb_dir,
-        id=run_id,
-        resume="allow",
-    )
+    def _init(resume_id):
+        return wandb.init(
+            project=project_name,
+            name=run_name,
+            group=group,
+            config=config.flatten(separator="-"),
+            dir=wandb_dir,
+            id=resume_id,
+            resume="allow" if resume_id else None,
+        )
+
+    try:
+        run = _init(run_id)
+    except Exception as e:
+        if run_id is None:
+            raise
+        # The saved run ID is no longer resumable (e.g. it belongs to a
+        # different account/key than the one now in use, or was deleted
+        # server-side) -- start a fresh run rather than blocking training.
+        print(f"[wandb] Could not resume run {run_id} ({e}) — starting a fresh run instead.")
+        run = _init(None)
 
     # Persist the run ID so future restarts resume this exact run.
     if run is not None:

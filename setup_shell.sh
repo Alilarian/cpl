@@ -3,7 +3,7 @@ CONDA_PATH=/uufs/chpc.utah.edu/sys/installdir/r8/miniconda3/25.9.1/miniconda3/bi
 CONDA_ENV_NAME=cpl
 REPO_PATH="${REPO_ROOT:-path/to/your/repo}"
 USE_MUJOCO_PY=true # For using mujoco py
-WANDB_API_KEY="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" # If you want to use wandb, set this to your API key.
+WANDB_API_KEY="${WANDB_API_KEY:-}" # Set via `export WANDB_API_KEY=...` in your shell profile before sourcing this script, or run `wandb login` instead and leave this unset.
 
 # Setup Conda
 # In non-interactive SLURM jobs, module load miniconda3 adds conda to PATH

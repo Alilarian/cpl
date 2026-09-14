@@ -35,9 +35,11 @@ def try_wandb_setup(path, config):
     # the env, type, budget, and seed (e.g. "mw_drawer-open-v2/pref_b000050_s0").
     run_name = os.getenv("WANDB_RUN_NAME", os.path.basename(path))
     group    = os.getenv("WANDB_GROUP", None)
+    entity   = os.getenv("WANDB_ENTITY", None)
 
     def _init(resume_id):
         return wandb.init(
+            entity=entity,
             project=project_name,
             name=run_name,
             group=group,

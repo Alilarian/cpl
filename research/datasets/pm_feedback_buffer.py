@@ -108,6 +108,13 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
     action_eps : clip actions to [-1+eps, 1-eps]
     split      : "all" (default, preserves existing behaviour), "train", or "val"
     val_frac   : fraction of reference trajectories held out for "val" when split != "all"
+    subsample_n    : if set, draw exactly this many reference trajectories uniformly at
+                     random (reproducible under subsample_seed) from whatever split != "all"
+                     already restricted to. Mutually exclusive with capacity, which
+                     prefix-slices the file instead of drawing a random subset.
+    subsample_seed : seed for the subsample_n draw (default 0). Independent of the
+                     training run's global `seed` config, so a seed sweep over policy
+                     init trains on the exact same data subsample every time.
     """
 
     def __init__(
@@ -120,6 +127,8 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
         action_eps: float = 1e-5,
         split: str = "all",
         val_frac: float = 0.1,
+        subsample_n: int = None,
+        subsample_seed: int = 0,
     ):
         assert split in ("all", "train", "val")
         # Use mmap_mode='r' so numpy memory-maps individual arrays (works for
@@ -139,6 +148,18 @@ class PMCreditAssignmentBuffer(torch.utils.data.IterableDataset):
             split_idx = np.sort(perm[n_val:] if split == "train" else perm[:n_val])
         else:
             split_idx = np.arange(N_total)
+
+        if subsample_n is not None:
+            assert capacity is None, (
+                "subsample_n and capacity are mutually exclusive: capacity prefix-slices the "
+                "file, while subsample_n draws a reproducible random subset instead. Use "
+                "exactly one."
+            )
+            assert subsample_n <= len(split_idx), (
+                f"subsample_n={subsample_n} exceeds available {len(split_idx)} rows"
+            )
+            sub_perm = np.random.RandomState(subsample_seed).permutation(len(split_idx))
+            split_idx = np.sort(split_idx[sub_perm[:subsample_n]])
 
         N = min(capacity, len(split_idx)) if capacity is not None else len(split_idx)
         cap_idx = split_idx[:N]

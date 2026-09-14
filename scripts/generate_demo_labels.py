@@ -21,6 +21,9 @@ For each segment in pool.npz:
 
 Total candidates K = 1 (expert) + n_tiers + 1 (original)
                    = --n-counterfactuals + 1
+                   Always exactly this value, regardless of how many distinct
+                   checkpoints are available (default --n-counterfactuals 6 -> K=7)
+                   — see the tier fallback below.
 
 n_tiers is derived automatically from --n-counterfactuals:
     n_tiers = n_counterfactuals - 1  (expert and original fill the other 2 slots)
@@ -30,6 +33,11 @@ Stratified tier sampling:
   - Pre-loads --checkpoints-per-tier candidate models per tier
   - Per segment: randomly picks 1 from each tier's pre-loaded pool
   - Guarantees counterfactuals span the full quality spectrum
+  - If a tier's own step range has no checkpoints in it (common with only 1-2
+    handpicked checkpoints per env), falls back to sampling from the full
+    checkpoint list instead of dropping the tier — so K never shrinks below
+    the requested value, even if it means reusing the same checkpoint(s)
+    across multiple tiers. See build_stratified_pool.
 
 Resumable: progress is saved every --save-every segments to
   <output-dir>/<env>/demo_labels_K<K>_progress.npz
@@ -252,6 +260,15 @@ def build_stratified_pool(run_dir, checkpoints, n_tiers, checkpoints_per_tier, d
     Divide checkpoints into n_tiers equal-width step ranges.
     Pre-load up to checkpoints_per_tier models from each tier.
 
+    If a tier's own range has no checkpoints in it (common when there are
+    fewer distinct checkpoints available than n_tiers, e.g. only 1-2 handpicked
+    checkpoints per env), falls back to sampling from the FULL checkpoint list
+    instead of leaving the tier empty. This guarantees every tier is filled —
+    and thus the full requested K is always produced — as long as at least one
+    checkpoint is available at all, even if that means the same checkpoint(s)
+    get reused across multiple tiers. Models are cached by path so a reused
+    checkpoint is only loaded from disk once.
+
     Returns:
         list of n_tiers lists, each containing (step, model) tuples.
         Per segment, 1 model is randomly drawn from each inner list.
@@ -262,6 +279,13 @@ def build_stratified_pool(run_dir, checkpoints, n_tiers, checkpoints_per_tier, d
     steps      = np.array([s for s, _ in checkpoints])
     tier_edges = np.linspace(steps[0], steps[-1], n_tiers + 1)
     tier_models = []
+    model_cache = {}
+
+    def load_cached(path):
+        if path not in model_cache:
+            m, _ = load_model(run_dir, path, device)
+            model_cache[path] = m
+        return model_cache[path]
 
     for t in range(n_tiers):
         lo, hi = tier_edges[t], tier_edges[t + 1]
@@ -269,9 +293,9 @@ def build_stratified_pool(run_dir, checkpoints, n_tiers, checkpoints_per_tier, d
 
         tier_ckpts = [(s, p) for (s, p), m in zip(checkpoints, mask) if m]
         if not tier_ckpts:
-            print(f"  [WARN] Tier {t+1} ({int(lo):,}–{int(hi):,}) has no checkpoints — skipping")
-            tier_models.append([])
-            continue
+            print(f"  [WARN] Tier {t+1} ({int(lo):,}–{int(hi):,}) has no checkpoints in range — "
+                  f"reusing the full checkpoint pool so this tier isn't dropped")
+            tier_ckpts = checkpoints
 
         n_sample = min(checkpoints_per_tier, len(tier_ckpts))
         chosen   = [tier_ckpts[j] for j in
@@ -280,11 +304,7 @@ def build_stratified_pool(run_dir, checkpoints, n_tiers, checkpoints_per_tier, d
         print(f"  Tier {t+1}/{n_tiers}  steps {int(lo):>7,}–{int(hi):>7,}  "
               f"loading ckpts: " + ", ".join(f"{s:,}" for s, _ in chosen))
 
-        loaded = []
-        for s, path in chosen:
-            m, _ = load_model(run_dir, path, device)
-            loaded.append((s, m))
-        tier_models.append(loaded)
+        tier_models.append([(s, load_cached(path)) for s, path in chosen])
 
     return tier_models
 

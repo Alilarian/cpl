@@ -4,6 +4,7 @@ CONDA_ENV_NAME=cpl
 REPO_PATH="${REPO_ROOT:-path/to/your/repo}"
 USE_MUJOCO_PY=true # For using mujoco py
 WANDB_API_KEY="${WANDB_API_KEY:-}" # Set via `export WANDB_API_KEY=...` in your shell profile before sourcing this script, or run `wandb login` instead and leave this unset.
+WANDB_ENTITY="${WANDB_ENTITY:-a7a7}" # WandB entity to write runs to. Must be passed explicitly (see scripts/train.py) -- wandb.init()'s implicit default-entity resolution does not reliably match this account's actual default entity on CHPC. Override via `export WANDB_ENTITY=...`.
 
 # Setup Conda
 # In non-interactive SLURM jobs, module load miniconda3 adds conda to PATH
@@ -30,6 +31,7 @@ fi
 if [[ -n "$WANDB_API_KEY" ]]; then
     export WANDB_API_KEY="$WANDB_API_KEY"
 fi
+export WANDB_ENTITY="$WANDB_ENTITY"
 
 if $USE_MUJOCO_PY; then
     echo "Using mujoco_py"

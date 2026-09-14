@@ -132,3 +132,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# PointMass feedback webapp — generated trial banks and local pilot data,
+# not source (regenerate with webapp/backend/build_trial_bank.py)
+/webapp/frontend/node_modules/
+/webapp/backend/data/trial_bank/
+/webapp/backend/data/raw_acts/
+/webapp/backend/data/sessions/

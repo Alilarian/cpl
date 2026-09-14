@@ -35,6 +35,14 @@ class DemoBuffer(torch.utils.data.IterableDataset):
         reward_shift:      scalar offset applied to rewards after scaling
         split:             "all" (default, preserves existing behaviour), "train", or "val"
         val_frac:          fraction of choice sets held out for "val" when split != "all"
+        subsample_n:       if set, draw exactly this many choice sets uniformly at random
+                           (reproducible under subsample_seed) from whatever split != "all"
+                           already restricted to. Mutually exclusive with capacity, which
+                           prefix-slices a quality-sorted file for nested top-B budgets
+                           instead of drawing a random subset.
+        subsample_seed:    seed for the subsample_n draw (default 0). Independent of the
+                           training run's global `seed` config, so a seed sweep over policy
+                           init trains on the exact same data subsample every time.
     """
 
     def __init__(
@@ -50,6 +58,8 @@ class DemoBuffer(torch.utils.data.IterableDataset):
         reward_shift: float = 0.0,
         split: str = "all",
         val_frac: float = 0.1,
+        subsample_n: Optional[int] = None,
+        subsample_seed: int = 0,
     ):
         assert path is not None, "Must provide path to demo_labels_K*.npz"
         assert split in ("all", "train", "val")
@@ -67,6 +77,17 @@ class DemoBuffer(torch.utils.data.IterableDataset):
             split_idx = perm[n_val:] if split == "train" else perm[:n_val]
             split_idx = np.sort(split_idx)
             obs, action, reward = obs[split_idx], action[split_idx], reward[split_idx]
+
+        if subsample_n is not None:
+            assert capacity is None, (
+                "subsample_n and capacity are mutually exclusive: capacity prefix-slices a "
+                "quality-sorted/generation-ordered file (e.g. nested top-B budgets), while "
+                "subsample_n draws a reproducible random subset instead. Use exactly one."
+            )
+            N_avail = obs.shape[0]
+            assert subsample_n <= N_avail, f"subsample_n={subsample_n} exceeds available {N_avail} rows"
+            keep = np.sort(np.random.RandomState(subsample_seed).permutation(N_avail)[:subsample_n])
+            obs, action, reward = obs[keep], action[keep], reward[keep]
 
         N = obs.shape[0]
         if capacity is not None and capacity < N:

@@ -67,7 +67,7 @@ def load_runs(runs_dir):
             print(f"  Missing log: {name}")
             continue
 
-        rows = np.genfromtxt(log_path, delimiter=",", names=True)
+        rows = np.genfromtxt(log_path, delimiter=",", names=True, invalid_raise=False)
         mask  = ~np.isnan(rows["evalsucc"])
         succs = rows["evalsucc"][mask]
 

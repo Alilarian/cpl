@@ -23,7 +23,11 @@
 #   bash scripts/check_mw_b10k_status.sh --env mw_plate-slide-v2 --alg piql
 #   bash scripts/check_mw_b10k_status.sh --no-color
 #
-# Env overrides: REPO_ROOT, RUNS_DIR, LOGS_DIR, TOTAL_STEPS, STALE_MINUTES
+# Env overrides: REPO_ROOT, RUNS_DIR, LOGS_DIR, TOTAL_STEPS, STALE_MINUTES,
+#   SACCT_START (default: 30 days ago), SACCT_CLUSTERS (default: "all" -- queries
+#   every cluster registered with the shared slurmdbd in one call; override with
+#   an explicit comma list like "kingspeak,notchpeak,granite" if "all" errors on
+#   your site -- run `sacctmgr show clusters -p` to see the exact names)
 
 set -uo pipefail
 
@@ -101,17 +105,35 @@ fi
 # it disappears from squeue, making "just hit its walltime 2 minutes ago" look
 # identical to "no job ever existed." sacct keeps the historical record -- state,
 # elapsed, and the walltime it was given -- so we can tell those apart.
+#
+# Both sacct and squeue are also scoped to whichever cluster's login node you
+# run them from by default -- a job on granite2 is invisible to sacct when run
+# from kingspeak/notchpeak, and vice versa, even though CHPC's home filesystem
+# (and this repo checkout) is shared across all three. -M/--clusters asks the
+# shared slurmdbd for every registered cluster in one query. If "all" isn't a
+# valid target on your Slurm setup, override with an explicit comma list, e.g.:
+#   SACCT_CLUSTERS=kingspeak,notchpeak,granite bash scripts/check_mw_b10k_status.sh
+# (run `sacctmgr show clusters -p` once to see the exact registered names).
 SACCT_START="${SACCT_START:-$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d 2>/dev/null || echo 2024-01-01)}"
+SACCT_CLUSTERS="${SACCT_CLUSTERS:-all}"
 
 declare -A JOBSTATE JOBELAPSED JOBLIMIT
+sacct_n=0
 while IFS='|' read -r jobid state elapsed tlimit; do
     [[ -z "$jobid" ]] && continue
     state_short="${state%% *}"   # strip " by <uid>" off e.g. "CANCELLED by 123"
     JOBSTATE["$jobid"]="$state_short"
     JOBELAPSED["$jobid"]="$elapsed"
     JOBLIMIT["$jobid"]="$tlimit"
-done < <(sacct -u "$USER" -S "$SACCT_START" -E now \
+    sacct_n=$((sacct_n+1))
+done < <(sacct -M "$SACCT_CLUSTERS" -u "$USER" -S "$SACCT_START" -E now \
              --format=JobID,State,Elapsed,Timelimit --parsable2 -X --noheader 2>/dev/null)
+
+if [[ "$sacct_n" -eq 0 ]]; then
+    echo "WARNING: sacct -M $SACCT_CLUSTERS returned 0 job records -- either you have no" >&2
+    echo "  jobs in the last $SACCT_START..now, or -M $SACCT_CLUSTERS isn't valid here." >&2
+    echo "  Run 'sacctmgr show clusters -p' and retry with SACCT_CLUSTERS=<comma list>." >&2
+fi
 
 now_epoch=$(date +%s)
 

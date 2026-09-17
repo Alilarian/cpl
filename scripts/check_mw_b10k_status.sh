@@ -73,7 +73,12 @@ color_for_status() {
 }
 
 # ── Build RUN_PATH -> "jobid_taskid" map by scanning every .out log's header once ──
+# Keyed by file MTIME, not job-ID magnitude: job IDs are only comparable within one
+# cluster (kingspeak/granite2/notchpeak each have independent counters), so "biggest
+# ID = most recent" silently picks a dead job from the wrong cluster over the real,
+# currently-running one. Wall-clock mtime is cluster-agnostic and always correct.
 declare -A RUNPATH_TO_TASK
+declare -A RUNPATH_TO_MTIME
 if [[ -d "$LOGS_DIR" ]]; then
     for f in "$LOGS_DIR"/mw_b10k_*.sbatch_*.out; do
         [[ -f "$f" ]] || continue
@@ -81,12 +86,11 @@ if [[ -d "$LOGS_DIR" ]]; then
         [[ -z "$rp" ]] && continue
         base=$(basename "$f" .out)
         jobtask="${base##*.sbatch_}"
-        # Keep the highest job ID seen for a given run_path (most recent attempt).
-        prev="${RUNPATH_TO_TASK[$rp]:-}"
-        prev_job="${prev%%|*}"
-        this_job="${jobtask%%_*}"
-        if [[ -z "$prev" || "$this_job" -ge "${prev_job:-0}" ]]; then
+        this_mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        prev_mtime="${RUNPATH_TO_MTIME[$rp]:-0}"
+        if [[ "$this_mtime" -ge "$prev_mtime" ]]; then
             RUNPATH_TO_TASK["$rp"]="$jobtask|$f"
+            RUNPATH_TO_MTIME["$rp"]="$this_mtime"
         fi
     done
 fi
@@ -145,6 +149,7 @@ for env in "${ENVS[@]}"; do
                 header=$(head -n1 "$log_csv")
                 step_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="step") print i}')
                 succ_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="eval/success") print i}')
+                sps_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="time/steps_per_second") print i}')
                 last_line=$(tail -n1 "$log_csv")
                 step=$(echo "$last_line" | awk -F',' -v c="$step_col" '{print $c+0}')
                 [[ -z "$step" ]] && step=0
@@ -154,18 +159,23 @@ for env in "${ENVS[@]}"; do
                     [[ -z "$eval_succ" ]] && eval_succ="-"
                 fi
 
-                log_mtime=$(stat -c %Y "$log_csv" 2>/dev/null || echo 0)
-                start_mtime=$(stat -c %Y "$run_path/config.yaml" 2>/dev/null || echo "$log_mtime")
-                age_min=$(( (now_epoch - log_mtime) / 60 ))
-                elapsed_hr_num=$(( (log_mtime - start_mtime) ))
-                if [[ "$elapsed_hr_num" -gt 60 && "$step" -gt 0 ]]; then
-                    rate=$(awk -v s="$step" -v e="$elapsed_hr_num" 'BEGIN{printf "%.0f", s/(e/3600)}')
-                    remaining=$(( TOTAL_STEPS - step ))
-                    if [[ "$rate" -gt 0 ]]; then
+                # Rate comes straight from the trainer's own instantaneous
+                # steps/sec log, not wall-clock/step arithmetic here -- that
+                # breaks across resumes (config.yaml's mtime resets on every
+                # relaunch while `step` keeps the full cumulative count from
+                # every prior attempt, wildly inflating a locally-computed rate).
+                if [[ -n "$sps_col" ]]; then
+                    sps=$(awk -F',' -v c="$sps_col" 'NF>=c && $c!="" {v=$c} END{print v+0}' "$log_csv")
+                    if awk -v s="$sps" 'BEGIN{exit !(s>0)}'; then
+                        rate=$(awk -v s="$sps" 'BEGIN{printf "%.0f", s*3600}')
+                        remaining=$(( TOTAL_STEPS - step ))
                         eta_hr=$(awk -v r="$remaining" -v rt="$rate" 'BEGIN{printf "%.1f", r/rt}')
                         eta="${eta_hr}h"
                     fi
                 fi
+
+                log_mtime=$(stat -c %Y "$log_csv" 2>/dev/null || echo 0)
+                age_min=$(( (now_epoch - log_mtime) / 60 ))
             else
                 step=0; pct="0.0%"; age_min=999999
             fi

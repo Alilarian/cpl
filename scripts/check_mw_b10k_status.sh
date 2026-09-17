@@ -29,7 +29,12 @@
 # running on, straight from sacct -- use this to see how work is spread across
 # kingspeak/notchpeak/granite2 without having to log into each one separately.
 #
-# Env overrides: REPO_ROOT, RUNS_DIR, LOGS_DIR, TOTAL_STEPS, STALE_MINUTES,
+# Env overrides: REPO_ROOT, RUNS_DIR, LOGS_DIR, TOTAL_STEPS,
+#   STALE_MINUTES (default: 60 -- floor only; the effective per-row threshold is
+#   max(STALE_MINUTES, 2x that run's own expected eval_freq interval, computed
+#   from its measured STEP/HR), so slow feedback types like credit_assignment
+#   don't get flagged STALE_RUNNING just for behaving normally),
+#   EVAL_FREQ (default: 5000, matching every mw_state_dense config),
 #   SACCT_START (default: 30 days ago), SACCT_CLUSTERS (default: "all" -- queries
 #   every cluster registered with the shared slurmdbd in one call; same as
 #   --cluster above, an explicit comma list like "kingspeak,notchpeak,granite"
@@ -43,6 +48,14 @@ RUNS_DIR="${RUNS_DIR:-$REPO_ROOT/runs/mw_b10k}"
 LOGS_DIR="${LOGS_DIR:-$REPO_ROOT/slurm/logs}"
 TOTAL_STEPS="${TOTAL_STEPS:-500000}"
 STALE_MINUTES="${STALE_MINUTES:-60}"
+# log.csv is only written once per eval_freq steps (5000, fixed across every
+# mw_state_dense config), and throughput varies hugely by feedback type --
+# seq_estop/scalar write every few minutes, pref/corr roughly hourly,
+# credit_assignment every several hours. A single fixed STALE_MINUTES flags
+# slow-but-healthy types as "possibly hung" purely from timing coincidence.
+# The effective threshold per row is max(STALE_MINUTES, 2x that run's own
+# expected eval_freq interval, from its measured STEP/HR).
+EVAL_FREQ="${EVAL_FREQ:-5000}"
 
 ENVS=(mw_button-press-v2 mw_door-open-v2 mw_drawer-open-v2 mw_plate-slide-v2)
 TYPES=(pref corr seq_estop scalar credit_assignment)
@@ -276,11 +289,19 @@ for env in "${ENVS[@]}"; do
                 status="COMPLETE"
                 detail="reached $TOTAL_STEPS steps (no training_complete sentinel found, inferred from log)"
             elif [[ -n "$qstate" ]]; then
+                effective_stale_min="$STALE_MINUTES"
+                if [[ "$rate" != "-" ]] && awk -v r="$rate" 'BEGIN{exit !(r>0)}'; then
+                    expected_interval_min=$(awk -v ef="$EVAL_FREQ" -v r="$rate" 'BEGIN{printf "%.0f", (ef/r)*60}')
+                    dynamic_min=$(( expected_interval_min * 2 ))
+                    if [[ "$dynamic_min" -gt "$effective_stale_min" ]]; then
+                        effective_stale_min="$dynamic_min"
+                    fi
+                fi
                 case "$qstate" in
                     RUNNING|CONFIGURING|COMPLETING)
-                        if [[ -f "$log_csv" && "$age_min" -gt "$STALE_MINUTES" ]]; then
+                        if [[ -f "$log_csv" && "$age_min" -gt "$effective_stale_min" ]]; then
                             status="STALE_RUNNING"
-                            detail="job $jobtask is $qstate but log untouched ${age_min}m -- may be hung"
+                            detail="job $jobtask is $qstate but log untouched ${age_min}m (expected ~${expected_interval_min:-?}m/eval) -- may be hung"
                         else
                             status="RUNNING"
                             detail="job $jobtask, log updated ${age_min}m ago"

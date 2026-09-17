@@ -21,13 +21,20 @@
 #   bash scripts/check_mw_b10k_status.sh
 #   bash scripts/check_mw_b10k_status.sh --only-issues
 #   bash scripts/check_mw_b10k_status.sh --env mw_plate-slide-v2 --alg piql
+#   bash scripts/check_mw_b10k_status.sh --cluster kingspeak   # scope the sacct
+#       query to just this cluster instead of every registered one ("all")
 #   bash scripts/check_mw_b10k_status.sh --no-color
+#
+# The output's CLUSTER column shows which cluster each matched job is actually
+# running on, straight from sacct -- use this to see how work is spread across
+# kingspeak/notchpeak/granite2 without having to log into each one separately.
 #
 # Env overrides: REPO_ROOT, RUNS_DIR, LOGS_DIR, TOTAL_STEPS, STALE_MINUTES,
 #   SACCT_START (default: 30 days ago), SACCT_CLUSTERS (default: "all" -- queries
-#   every cluster registered with the shared slurmdbd in one call; override with
-#   an explicit comma list like "kingspeak,notchpeak,granite" if "all" errors on
-#   your site -- run `sacctmgr show clusters -p` to see the exact names)
+#   every cluster registered with the shared slurmdbd in one call; same as
+#   --cluster above, an explicit comma list like "kingspeak,notchpeak,granite"
+#   works too if "all" errors on your site -- run `sacctmgr show clusters -p`
+#   to see the exact registered names)
 
 set -uo pipefail
 
@@ -53,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --only-issues) ONLY_ISSUES=1; shift ;;
         --env) FILTER_ENV="$2"; shift 2 ;;
         --alg) FILTER_ALG="$2"; shift 2 ;;
+        --cluster) SACCT_CLUSTERS="$2"; shift 2 ;;
         --no-color) USE_COLOR=0; shift ;;
         *) echo "Unknown arg: $1" >&2; exit 1 ;;
     esac
@@ -117,17 +125,18 @@ fi
 SACCT_START="${SACCT_START:-$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d 2>/dev/null || echo 2024-01-01)}"
 SACCT_CLUSTERS="${SACCT_CLUSTERS:-all}"
 
-declare -A JOBSTATE JOBELAPSED JOBLIMIT
+declare -A JOBSTATE JOBELAPSED JOBLIMIT JOBCLUSTER
 sacct_n=0
-while IFS='|' read -r jobid state elapsed tlimit; do
+while IFS='|' read -r jobid state elapsed tlimit cluster; do
     [[ -z "$jobid" ]] && continue
     state_short="${state%% *}"   # strip " by <uid>" off e.g. "CANCELLED by 123"
     JOBSTATE["$jobid"]="$state_short"
     JOBELAPSED["$jobid"]="$elapsed"
     JOBLIMIT["$jobid"]="$tlimit"
+    JOBCLUSTER["$jobid"]="$cluster"
     sacct_n=$((sacct_n+1))
 done < <(sacct -M "$SACCT_CLUSTERS" -u "$USER" -S "$SACCT_START" -E now \
-             --format=JobID,State,Elapsed,Timelimit --parsable2 -X --noheader 2>/dev/null)
+             --format=JobID,State,Elapsed,Timelimit,Cluster --parsable2 -X --noheader 2>/dev/null)
 
 if [[ "$sacct_n" -eq 0 ]]; then
     echo "WARNING: sacct -M $SACCT_CLUSTERS returned 0 job records -- either you have no" >&2
@@ -137,8 +146,8 @@ fi
 
 now_epoch=$(date +%s)
 
-header_fmt="%-22s %-19s %-5s %-4s %-14s %-9s %-6s %-9s %-9s %-10s %-12s %-16s %s\n"
-printf "$header_fmt" "ENV" "TYPE" "ALG" "SEED" "STATUS" "STEP" "PCT" "STEP/HR" "ETA" "EVAL_SUCC" "SLURM_STATE" "ELAPSED/LIMIT" "DETAIL"
+header_fmt="%-22s %-19s %-5s %-4s %-14s %-9s %-6s %-9s %-9s %-10s %-11s %-12s %-16s %s\n"
+printf "$header_fmt" "ENV" "TYPE" "ALG" "SEED" "STATUS" "STEP" "PCT" "STEP/HR" "ETA" "EVAL_SUCC" "CLUSTER" "SLURM_STATE" "ELAPSED/LIMIT" "DETAIL"
 printf '%.0s-' $(seq 1 170); echo
 
 declare -A COUNTS
@@ -161,7 +170,7 @@ for env in "${ENVS[@]}"; do
         total=$((total+1))
         run_path="$RUNS_DIR/$env/$type/${alg}_s${seed}"
         status="MISSING"; step="-"; pct="-"; rate="-"; eta="-"; eval_succ="-"; detail=""
-        slurm_state="-"; elapsed_limit="-"
+        slurm_state="-"; elapsed_limit="-"; cluster="-"
 
         if [[ -f "$run_path/training_complete" ]]; then
             status="COMPLETE"
@@ -233,10 +242,12 @@ for env in "${ENVS[@]}"; do
                 qstate="${JOBSTATE[$jobtask]}"
                 slurm_state="$qstate"
                 elapsed_limit="${JOBELAPSED[$jobtask]:--}/${JOBLIMIT[$jobtask]:--}"
+                cluster="${JOBCLUSTER[$jobtask]:--}"
             elif [[ -n "$jobid" && -n "${JOBSTATE[$jobid]:-}" ]]; then
                 qstate="${JOBSTATE[$jobid]}"
                 slurm_state="$qstate"
                 elapsed_limit="${JOBELAPSED[$jobid]:--}/${JOBLIMIT[$jobid]:--}"
+                cluster="${JOBCLUSTER[$jobid]:--}"
             fi
 
             if [[ "$step" -ge "$TOTAL_STEPS" ]]; then
@@ -320,7 +331,7 @@ for env in "${ENVS[@]}"; do
         fi
 
         color=$(color_for_status "$status")
-        printf "%s${header_fmt}%s" "$color" "$env" "$type" "$alg" "$seed" "$status" "$step" "$pct" "$rate" "$eta" "$eval_succ" "$slurm_state" "$elapsed_limit" "$detail" "$C_RESET"
+        printf "%s${header_fmt}%s" "$color" "$env" "$type" "$alg" "$seed" "$status" "$step" "$pct" "$rate" "$eta" "$eval_succ" "$cluster" "$slurm_state" "$elapsed_limit" "$detail" "$C_RESET"
       done
     done
   done

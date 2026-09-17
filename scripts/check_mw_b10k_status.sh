@@ -177,12 +177,13 @@ for env in "${ENVS[@]}"; do
             step="$TOTAL_STEPS"; pct="100%"
             log_csv="$run_path/log.csv"
             if [[ -f "$log_csv" ]]; then
-                header=$(head -n1 "$log_csv")
-                succ_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="eval/success") print i}')
-                if [[ -n "$succ_col" ]]; then
-                    eval_succ=$(awk -F',' -v c="$succ_col" 'NF>=c && $c!="" {v=$c} END{if(v!="") printf "%.3f", v}' "$log_csv")
-                    [[ -z "$eval_succ" ]] && eval_succ="-"
-                fi
+                eval_succ=$(awk -F',' '
+                    { gsub(/\r$/, "") }
+                    NR==1 { for(i=1;i<=NF;i++) if($i=="eval/success") c=i; next }
+                    c && NF>=c && $c!="" { v=$c }
+                    END { if (v!="") printf "%.3f", v }
+                ' "$log_csv")
+                [[ -z "$eval_succ" ]] && eval_succ="-"
             fi
 
         elif [[ -d "$run_path" ]]; then
@@ -190,41 +191,62 @@ for env in "${ENVS[@]}"; do
 
             if [[ -f "$log_csv" ]]; then
                 header=$(head -n1 "$log_csv")
-                step_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="step") print i}')
-                succ_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="eval/success") print i}')
-                sps_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="time/steps_per_second") print i}')
-                # Scan the whole file for the last row with a non-empty value at
-                # the step column, rather than blindly taking the last line --
-                # `tail -n1` can grab a partially-written row if the trainer is
-                # mid-write at the exact moment we read the file, producing
-                # garbage (seen in practice: a bogus multi-trillion "step").
-                step=$(awk -F',' -v c="$step_col" 'NF>=c && $c!="" {v=$c+0} END{print v+0}' "$log_csv")
+                # Look up each column's index AND extract its value in one
+                # single awk pass over the file, rather than reading the header
+                # separately (`head -n1`) and re-scanning afterward. The trainer's
+                # logger destructively truncates-and-rewrites log.csv with a new
+                # header whenever a metric key first appears (CSVWriter's
+                # _reset_csv_handler opens the file in "w" mode); if that rewrite
+                # happens in the gap between a separate header-read and a
+                # separate data-scan, column positions shift and we silently
+                # grab the wrong column's value (observed: pulled eval/reward
+                # instead of step, e.g. "9.18665", which then crashed bash's
+                # integer arithmetic downstream). A single pass has no such gap.
+                step=$(awk -F',' '
+                    { gsub(/\r$/, "") }
+                    NR==1 { for(i=1;i<=NF;i++) if($i=="step") c=i; next }
+                    c && NF>=c && $c!="" { v=$c }
+                    END { print v+0 }
+                ' "$log_csv")
                 [[ -z "$step" ]] && step=0
-                # Sanity clamp: a step count wildly outside [0, total_steps] is
-                # never real (parsing artifact) -- treat it as unknown instead
-                # of reporting nonsense.
-                if awk -v s="$step" -v t="$TOTAL_STEPS" 'BEGIN{exit !(s<0 || s>t)}'; then
+                # Hard type check: a valid step is always a plain non-negative
+                # integer. Anything else (a float from a mis-attributed column,
+                # an empty read, etc.) is a parsing artifact, not real data --
+                # reset to 0 rather than feeding a non-integer into bash's `((.))`
+                # arithmetic later, which errors out and kills the whole script.
+                if ! [[ "$step" =~ ^[0-9]+$ ]]; then
+                    step=0
+                fi
+                # Sanity clamp: a step count above total_steps is never real
+                # (parsing artifact) -- treat it as unknown instead of nonsense.
+                if [[ "$step" -gt "$TOTAL_STEPS" ]]; then
                     step=0
                 fi
                 pct=$(awk -v s="$step" -v t="$TOTAL_STEPS" 'BEGIN{printf "%.1f%%", (s/t)*100}')
-                if [[ -n "$succ_col" ]]; then
-                    eval_succ=$(awk -F',' -v c="$succ_col" 'NF>=c && $c!="" {v=$c} END{if(v!="") printf "%.3f", v}' "$log_csv")
-                    [[ -z "$eval_succ" ]] && eval_succ="-"
-                fi
+                eval_succ=$(awk -F',' '
+                    { gsub(/\r$/, "") }
+                    NR==1 { for(i=1;i<=NF;i++) if($i=="eval/success") c=i; next }
+                    c && NF>=c && $c!="" { v=$c }
+                    END { if (v!="") printf "%.3f", v }
+                ' "$log_csv")
+                [[ -z "$eval_succ" ]] && eval_succ="-"
 
                 # Rate comes straight from the trainer's own instantaneous
                 # steps/sec log, not wall-clock/step arithmetic here -- that
                 # breaks across resumes (config.yaml's mtime resets on every
                 # relaunch while `step` keeps the full cumulative count from
                 # every prior attempt, wildly inflating a locally-computed rate).
-                if [[ -n "$sps_col" ]]; then
-                    sps=$(awk -F',' -v c="$sps_col" 'NF>=c && $c!="" {v=$c} END{print v+0}' "$log_csv")
-                    if awk -v s="$sps" 'BEGIN{exit !(s>0)}'; then
-                        rate=$(awk -v s="$sps" 'BEGIN{printf "%.0f", s*3600}')
-                        remaining=$(( TOTAL_STEPS - step ))
-                        eta_hr=$(awk -v r="$remaining" -v rt="$rate" 'BEGIN{printf "%.1f", r/rt}')
-                        eta="${eta_hr}h"
-                    fi
+                sps=$(awk -F',' '
+                    { gsub(/\r$/, "") }
+                    NR==1 { for(i=1;i<=NF;i++) if($i=="time/steps_per_second") c=i; next }
+                    c && NF>=c && $c!="" { v=$c }
+                    END { print v+0 }
+                ' "$log_csv")
+                if [[ -n "$sps" ]] && awk -v s="$sps" 'BEGIN{exit !(s>0)}'; then
+                    rate=$(awk -v s="$sps" 'BEGIN{printf "%.0f", s*3600}')
+                    remaining=$(( TOTAL_STEPS - step ))
+                    eta_hr=$(awk -v r="$remaining" -v rt="$rate" 'BEGIN{printf "%.1f", r/rt}')
+                    eta="${eta_hr}h"
                 fi
 
                 log_mtime=$(stat -c %Y "$log_csv" 2>/dev/null || echo 0)

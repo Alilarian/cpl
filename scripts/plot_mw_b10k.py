@@ -13,6 +13,13 @@ Usage
 python scripts/plot_mw_b10k.py
 python scripts/plot_mw_b10k.py --runs-dir runs/mw_b10k --alg cpl --out results/mw_b10k
 python scripts/plot_mw_b10k.py --metrics eval/success,eval/reward,train/accuracy,train/demo_loss
+
+--dashboard builds one combined figure per (env, feedback_type) instead of the
+per-metric/per-alg plots above: eval/success and eval/reward with CPL vs PIQL
+overlaid for direct comparison, plus each algorithm's own training diagnostics
+(accuracy/loss aren't directly comparable across algorithms, so those stay in
+separate panels). Ignores --alg/--metrics since it needs both algorithms' data.
+    python scripts/plot_mw_b10k.py --dashboard
 """
 
 import argparse
@@ -202,6 +209,107 @@ def plot_peak_success_summary(env_name, data, out_dir):
     plt.close(fig)
 
 
+CPL_COLOR = "#4C3F91"
+PIQL_COLOR = "#A5670E"
+
+
+def _plot_comparison_panel(ax, cpl_data, piql_data, fb_type, metric, title, ylim=None):
+    """Overlay CPL vs PIQL mean+min/max-shaded curves for one metric on one axis."""
+    any_curve = False
+    for alg, data, color in (("CPL", cpl_data, CPL_COLOR), ("PIQL", piql_data, PIQL_COLOR)):
+        entries = [get_series(rows, metric) for (t, s), rows in data.items() if t == fb_type]
+        entries = [e for e in entries if e is not None]
+        if not entries:
+            continue
+        grid, curves = _common_grid(entries)
+        mean, lo, hi = curves.mean(axis=0), curves.min(axis=0), curves.max(axis=0)
+        ax.plot(grid, mean, "-", color=color, label=f"{alg} (n={len(entries)})", linewidth=1.8, zorder=3)
+        ax.fill_between(grid, lo, hi, color=color, alpha=0.15, zorder=2)
+        any_curve = True
+
+    if ylim:
+        ax.set_ylim(*ylim)
+    ax.set_xlabel("Training step", fontsize=9)
+    ax.set_ylabel(metric, fontsize=9)
+    ax.set_title(title, fontsize=10)
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
+    if any_curve:
+        ax.legend(fontsize=7, loc="best", framealpha=0.9)
+    else:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="gray")
+    return any_curve
+
+
+def _plot_twin_metric_panel(ax, data, fb_type, metric1, color1, metric2, color2, title):
+    """Plot two metrics for ONE algorithm on twin y-axes (e.g. accuracy + loss) --
+    these aren't comparable across CPL/PIQL (different loss formulations), so
+    each algorithm gets its own panel rather than being overlaid."""
+    entries1 = [get_series(rows, metric1) for (t, s), rows in data.items() if t == fb_type]
+    entries1 = [e for e in entries1 if e is not None]
+    entries2 = [get_series(rows, metric2) for (t, s), rows in data.items() if t == fb_type]
+    entries2 = [e for e in entries2 if e is not None]
+
+    ax2 = ax.twinx()
+    any_curve = False
+    if entries1:
+        grid, curves = _common_grid(entries1)
+        ax.plot(grid, curves.mean(axis=0), "-", color=color1, linewidth=1.6, label=metric1)
+        any_curve = True
+    if entries2:
+        grid, curves = _common_grid(entries2)
+        ax2.plot(grid, curves.mean(axis=0), "--", color=color2, linewidth=1.6, label=metric2)
+        any_curve = True
+
+    ax.set_xlabel("Training step", fontsize=9)
+    ax.set_ylabel(metric1, color=color1, fontsize=9)
+    ax2.set_ylabel(metric2, color=color2, fontsize=9)
+    ax.tick_params(axis="y", labelcolor=color1)
+    ax2.tick_params(axis="y", labelcolor=color2)
+    ax.set_title(title, fontsize=10)
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    if lines1 or lines2:
+        ax.legend(lines1 + lines2, labels1 + labels2, fontsize=7, loc="best", framealpha=0.9)
+    else:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", transform=ax.transAxes, color="gray")
+    return any_curve
+
+
+def build_dashboard(env_name, fb_type, cpl_data, piql_data, out_dir):
+    """One combined figure per (env, feedback_type): eval/success and eval/reward
+    with CPL vs PIQL overlaid for direct comparison, plus each algorithm's own
+    training diagnostics (not cross-comparable, so kept in separate panels)."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.suptitle(f"{env_name} — {LABELS[fb_type]} — CPL vs PIQL", fontsize=13, fontweight="bold")
+
+    has_success = _plot_comparison_panel(axes[0, 0], cpl_data, piql_data, fb_type,
+                                          "eval/success", "Eval success rate", ylim=(-0.02, 1.02))
+    has_reward = _plot_comparison_panel(axes[0, 1], cpl_data, piql_data, fb_type,
+                                         "eval/reward", "Eval reward")
+    has_cpl_diag = _plot_twin_metric_panel(axes[1, 0], cpl_data, fb_type,
+                                            "train/accuracy", "#2A9D8F",
+                                            "train/demo_loss", "#E76F51",
+                                            "CPL training diagnostics")
+    has_piql_diag = _plot_twin_metric_panel(axes[1, 1], piql_data, fb_type,
+                                             "train/reward_accuracy", "#2A9D8F",
+                                             "train/actor_loss", "#E76F51",
+                                             "PIQL training diagnostics")
+
+    if not (has_success or has_reward or has_cpl_diag or has_piql_diag):
+        plt.close(fig)
+        print(f"  No data at all for {env_name}/{fb_type} — skipping dashboard.")
+        return
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    slug = env_name.replace("/", "_")
+    out_path = os.path.join(out_dir, f"dashboard_{slug}_{fb_type}.pdf")
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"  Dashboard saved -> {out_path}")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs-dir", default="runs/mw_b10k",
@@ -212,7 +320,12 @@ def main():
                         help="Comma-separated log.csv column names to plot vs. step "
                              f"(default: {','.join(DEFAULT_METRICS)})")
     parser.add_argument("--out", default=None,
-                        help="Output directory for PDFs (default: results/mw_b10k/<alg>)")
+                        help="Output directory for PDFs (default: results/mw_b10k/<alg>, "
+                             "or results/mw_b10k/dashboards with --dashboard)")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Instead of the per-metric/per-alg plots above, build ONE combined "
+                             "dashboard per (env, feedback_type) with CPL vs PIQL eval/success and "
+                             "eval/reward overlaid, plus each algorithm's own training diagnostics")
     args = parser.parse_args()
     metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
 
@@ -220,8 +333,6 @@ def main():
     runs_dir = args.runs_dir
     if not os.path.isabs(runs_dir):
         runs_dir = os.path.join(repo_root, runs_dir)
-    out_dir = args.out or os.path.join(repo_root, "results", "mw_b10k", args.alg)
-    os.makedirs(out_dir, exist_ok=True)
 
     if not os.path.isdir(runs_dir):
         print(f"No runs found under {runs_dir}")
@@ -234,6 +345,21 @@ def main():
     if not env_dirs:
         print(f"No mw_* env subdirectories under {runs_dir}")
         return
+
+    if args.dashboard:
+        out_dir = args.out or os.path.join(repo_root, "results", "mw_b10k", "dashboards")
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"Found {len(env_dirs)} environment(s): {env_dirs}")
+        for env_name in env_dirs:
+            print(f"\n{'='*60}\nEnv: {env_name}\n{'='*60}")
+            cpl_data = load_env_runs(os.path.join(runs_dir, env_name), "cpl")
+            piql_data = load_env_runs(os.path.join(runs_dir, env_name), "piql")
+            for fb_type in TYPES:
+                build_dashboard(env_name, fb_type, cpl_data, piql_data, out_dir)
+        return
+
+    out_dir = args.out or os.path.join(repo_root, "results", "mw_b10k", args.alg)
+    os.makedirs(out_dir, exist_ok=True)
 
     print(f"Found {len(env_dirs)} environment(s): {env_dirs}")
     print(f"Metrics: {metrics}")

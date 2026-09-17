@@ -95,18 +95,29 @@ if [[ -d "$LOGS_DIR" ]]; then
     done
 fi
 
-# ── Current queue snapshot (only shows what's live right now) ──────────────────
-declare -A JOBSTATE
-while IFS='|' read -r jobid state; do
+# ── Historical + live job state via sacct ───────────────────────────────────────
+# squeue only shows jobs that are CURRENTLY queued/running -- the instant a job
+# ends for any reason (TIMEOUT, PREEMPTED, FAILED, CANCELLED, or a clean finish)
+# it disappears from squeue, making "just hit its walltime 2 minutes ago" look
+# identical to "no job ever existed." sacct keeps the historical record -- state,
+# elapsed, and the walltime it was given -- so we can tell those apart.
+SACCT_START="${SACCT_START:-$(date -d '-30 days' +%Y-%m-%d 2>/dev/null || date -v-30d +%Y-%m-%d 2>/dev/null || echo 2024-01-01)}"
+
+declare -A JOBSTATE JOBELAPSED JOBLIMIT
+while IFS='|' read -r jobid state elapsed tlimit; do
     [[ -z "$jobid" ]] && continue
-    JOBSTATE["$jobid"]="$state"
-done < <(squeue -u "$USER" -h -o "%i|%t" 2>/dev/null)
+    state_short="${state%% *}"   # strip " by <uid>" off e.g. "CANCELLED by 123"
+    JOBSTATE["$jobid"]="$state_short"
+    JOBELAPSED["$jobid"]="$elapsed"
+    JOBLIMIT["$jobid"]="$tlimit"
+done < <(sacct -u "$USER" -S "$SACCT_START" -E now \
+             --format=JobID,State,Elapsed,Timelimit --parsable2 -X --noheader 2>/dev/null)
 
 now_epoch=$(date +%s)
 
-header_fmt="%-22s %-19s %-5s %-4s %-14s %-9s %-6s %-9s %-9s %-10s %s\n"
-printf "$header_fmt" "ENV" "TYPE" "ALG" "SEED" "STATUS" "STEP" "PCT" "STEP/HR" "ETA" "EVAL_SUCC" "DETAIL"
-printf '%.0s-' $(seq 1 140); echo
+header_fmt="%-22s %-19s %-5s %-4s %-14s %-9s %-6s %-9s %-9s %-10s %-12s %-16s %s\n"
+printf "$header_fmt" "ENV" "TYPE" "ALG" "SEED" "STATUS" "STEP" "PCT" "STEP/HR" "ETA" "EVAL_SUCC" "SLURM_STATE" "ELAPSED/LIMIT" "DETAIL"
+printf '%.0s-' $(seq 1 170); echo
 
 declare -A COUNTS
 declare -A COUNTS_BY_ENV
@@ -128,6 +139,7 @@ for env in "${ENVS[@]}"; do
         total=$((total+1))
         run_path="$RUNS_DIR/$env/$type/${alg}_s${seed}"
         status="MISSING"; step="-"; pct="-"; rate="-"; eta="-"; eval_succ="-"; detail=""
+        slurm_state="-"; elapsed_limit="-"
 
         if [[ -f "$run_path/training_complete" ]]; then
             status="COMPLETE"
@@ -150,9 +162,19 @@ for env in "${ENVS[@]}"; do
                 step_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="step") print i}')
                 succ_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="eval/success") print i}')
                 sps_col=$(echo "$header" | awk -F',' '{for(i=1;i<=NF;i++) if($i=="time/steps_per_second") print i}')
-                last_line=$(tail -n1 "$log_csv")
-                step=$(echo "$last_line" | awk -F',' -v c="$step_col" '{print $c+0}')
+                # Scan the whole file for the last row with a non-empty value at
+                # the step column, rather than blindly taking the last line --
+                # `tail -n1` can grab a partially-written row if the trainer is
+                # mid-write at the exact moment we read the file, producing
+                # garbage (seen in practice: a bogus multi-trillion "step").
+                step=$(awk -F',' -v c="$step_col" 'NF>=c && $c!="" {v=$c+0} END{print v+0}' "$log_csv")
                 [[ -z "$step" ]] && step=0
+                # Sanity clamp: a step count wildly outside [0, total_steps] is
+                # never real (parsing artifact) -- treat it as unknown instead
+                # of reporting nonsense.
+                if awk -v s="$step" -v t="$TOTAL_STEPS" 'BEGIN{exit !(s<0 || s>t)}'; then
+                    step=0
+                fi
                 pct=$(awk -v s="$step" -v t="$TOTAL_STEPS" 'BEGIN{printf "%.1f%%", (s/t)*100}')
                 if [[ -n "$succ_col" ]]; then
                     eval_succ=$(awk -F',' -v c="$succ_col" 'NF>=c && $c!="" {v=$c} END{if(v!="") printf "%.3f", v}' "$log_csv")
@@ -187,8 +209,12 @@ for env in "${ENVS[@]}"; do
             qstate=""
             if [[ -n "$jobtask" && -n "${JOBSTATE[$jobtask]:-}" ]]; then
                 qstate="${JOBSTATE[$jobtask]}"
+                slurm_state="$qstate"
+                elapsed_limit="${JOBELAPSED[$jobtask]:--}/${JOBLIMIT[$jobtask]:--}"
             elif [[ -n "$jobid" && -n "${JOBSTATE[$jobid]:-}" ]]; then
                 qstate="${JOBSTATE[$jobid]}"
+                slurm_state="$qstate"
+                elapsed_limit="${JOBELAPSED[$jobid]:--}/${JOBLIMIT[$jobid]:--}"
             fi
 
             if [[ "$step" -ge "$TOTAL_STEPS" ]]; then
@@ -196,36 +222,56 @@ for env in "${ENVS[@]}"; do
                 detail="reached $TOTAL_STEPS steps (no training_complete sentinel found, inferred from log)"
             elif [[ -n "$qstate" ]]; then
                 case "$qstate" in
-                    R|CG)
+                    RUNNING|CONFIGURING|COMPLETING)
                         if [[ -f "$log_csv" && "$age_min" -gt "$STALE_MINUTES" ]]; then
                             status="STALE_RUNNING"
-                            detail="job $jobtask is R but log untouched ${age_min}m"
+                            detail="job $jobtask is $qstate but log untouched ${age_min}m -- may be hung"
                         else
                             status="RUNNING"
-                            detail="job $jobtask"
+                            detail="job $jobtask, log updated ${age_min}m ago"
                         fi
                         ;;
-                    PD)
+                    PENDING)
                         status="PENDING"
                         detail="job $jobtask queued"
                         ;;
+                    TIMEOUT)
+                        status="NEEDS_RESUME"
+                        detail="job $jobtask HIT ITS WALLTIME (ran full $elapsed_limit) -- resubmit, will resume from checkpoint"
+                        ;;
+                    PREEMPTED)
+                        status="NEEDS_RESUME"
+                        detail="job $jobtask PREEMPTED by scheduler at $elapsed_limit -- did not hit walltime, resubmit"
+                        ;;
+                    FAILED|OUT_OF_MEMORY|NODE_FAIL)
+                        status="NEEDS_RESUME"
+                        detail="job $jobtask $qstate after $elapsed_limit -- check .err, likely a real crash"
+                        ;;
+                    CANCELLED)
+                        status="NEEDS_RESUME"
+                        detail="job $jobtask CANCELLED after $elapsed_limit (manual scancel)"
+                        ;;
+                    COMPLETED)
+                        status="NEEDS_RESUME"
+                        detail="job $jobtask ended cleanly (Slurm COMPLETED) but log shows only $step/$TOTAL_STEPS steps -- check script logic, not an infra issue"
+                        ;;
                     *)
                         status="NEEDS_RESUME"
-                        detail="job $jobtask state=$qstate"
+                        detail="job $jobtask state=$qstate ($elapsed_limit)"
                         ;;
                 esac
             else
                 if [[ -f "$log_csv" ]]; then
                     status="NEEDS_RESUME"
-                    detail="no active Slurm task; log last written ${age_min}m ago"
+                    detail="no Slurm record in last $SACCT_START..now; log last written ${age_min}m ago"
                 else
                     status="NO_LOG_YET"
-                    detail="run dir exists, no log.csv, nothing queued"
+                    detail="run dir exists, no log.csv, no Slurm record found"
                 fi
-                if [[ ( "$status" == "NEEDS_RESUME" || "$status" == "NO_LOG_YET" ) && -f "$errfile" ]]; then
-                    hint=$(tail -n 5 "$errfile" 2>/dev/null | grep -iE "error|traceback|cancelled|time limit|oom|killed" | tail -n1)
-                    [[ -n "$hint" ]] && detail="$detail | ${hint:0:60}"
-                fi
+            fi
+            if [[ ( "$status" == "NEEDS_RESUME" || "$status" == "NO_LOG_YET" ) && -f "$errfile" ]]; then
+                hint=$(tail -n 5 "$errfile" 2>/dev/null | grep -iE "error|traceback|cancelled|time limit|oom|killed" | tail -n1)
+                [[ -n "$hint" ]] && detail="$detail | ${hint:0:60}"
             fi
         else
             status="MISSING"
@@ -252,7 +298,7 @@ for env in "${ENVS[@]}"; do
         fi
 
         color=$(color_for_status "$status")
-        printf "%s${header_fmt}%s" "$color" "$env" "$type" "$alg" "$seed" "$status" "$step" "$pct" "$rate" "$eta" "$eval_succ" "$detail" "$C_RESET"
+        printf "%s${header_fmt}%s" "$color" "$env" "$type" "$alg" "$seed" "$status" "$step" "$pct" "$rate" "$eta" "$eval_succ" "$slurm_state" "$elapsed_limit" "$detail" "$C_RESET"
       done
     done
   done

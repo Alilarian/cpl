@@ -180,9 +180,20 @@ def score_trajectories(obs, action, reward, oracle, discount, mcmc_samples, devi
 # Rollout from a saved state
 # ---------------------------------------------------------------------------
 
-def rollout_from_state(model, env, s0, segment_length, device):
+def rollout_from_state(model, env, s0, segment_length, device, sample=False):
     """
-    Restore env to s0, roll out model deterministically for segment_length steps.
+    Restore env to s0, roll out model for segment_length steps.
+
+    sample=False (default): deterministic -- the policy's mode/mean action every
+        step, so repeated calls with the same model from the same s0 produce an
+        identical trajectory. Used for the expert/demo rollout, which should stay
+        the canonical "best" behavior.
+    sample=True: stochastic -- draws dist.sample() each step (same mechanism SAC
+        itself uses for training-time action selection, see off_policy_algorithm.py
+        _predict / sac.py's own self.predict(..., sample=True) call). Used for tier
+        counterfactual rollouts so that repeated draws from the *same* checkpoint
+        (common when few distinct checkpoints exist in a success band) diverge into
+        different trajectories instead of producing byte-identical duplicates.
 
     Returns (obs, action, reward) each (T, dim), or None if episode ends early.
     """
@@ -202,7 +213,7 @@ def rollout_from_state(model, env, s0, segment_length, device):
 
     for _ in range(segment_length):
         with torch.no_grad():
-            action = model.predict(dict(obs=obs), sample=False)
+            action = model.predict(dict(obs=obs), sample=sample)
         action = np.clip(action, env.action_space.low, env.action_space.high)
 
         result = env.step(action)
@@ -342,6 +353,13 @@ def main():
     parser.add_argument("--checkpoints-per-tier", type=int, default=2,
                         help="Candidate checkpoints pre-loaded per tier (default: 2). "
                              "1 is randomly chosen per segment.")
+    parser.add_argument("--stochastic-counterfactuals", action="store_true",
+                        help="Sample actions (dist.sample()) instead of the deterministic "
+                             "mode for tier counterfactual rollouts, so repeated draws from "
+                             "the same checkpoint (common when a success band has few distinct "
+                             "checkpoints) diverge into different trajectories instead of "
+                             "byte-identical duplicates. Does not affect the expert/demo "
+                             "rollout, which is always deterministic.")
     parser.add_argument("--min-adv-gap", type=float, default=0.0,
                         help="Min rl_sum gap (expert - best counterfactual) to keep a sample "
                              "(default: 0.0). Filters out segments where the expert doesn't "
@@ -385,6 +403,7 @@ def main():
     assert n_tiers >= 1, "--n-counterfactuals must be >= 2"
     print(f"\nChoice set K={K}  (1 demo + {args.n_counterfactuals} counterfactuals)")
     print(f"Composition: 1 expert + {n_tiers} stratified tiers + 1 original")
+    print(f"Tier rollouts: {'stochastic (sample=True)' if args.stochastic_counterfactuals else 'deterministic (sample=False)'}")
 
     # ------------------------------------------------------------------
     # Load pool
@@ -526,7 +545,8 @@ def main():
                 if not tier:
                     continue
                 _, m = tier[np.random.randint(len(tier))]
-                result = rollout_from_state(m, env, s0, T, device)
+                result = rollout_from_state(m, env, s0, T, device,
+                                             sample=args.stochastic_counterfactuals)
                 if result is None:
                     tier_ok = False
                     break

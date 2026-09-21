@@ -48,6 +48,15 @@
 #                                     "original" segment, whose quality is instead
 #                                     controlled by how the pool itself was built
 #                                     -- see scripts/verify_pool_checkpoint_success.py)
+#   STOCHASTIC_COUNTERFACTUALS  default: unset (demo only; set to any non-empty
+#                                     value to sample tier counterfactual rollouts
+#                                     instead of using the deterministic mode action
+#                                     -- see --stochastic-counterfactuals in
+#                                     generate_demo_labels.py. Useful when a success
+#                                     band collapses to very few distinct checkpoints,
+#                                     which would otherwise produce byte-identical
+#                                     tier counterfactuals. Expert/demo rollout is
+#                                     always deterministic regardless of this.)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -87,6 +96,7 @@ NUM_SHARDS="${NUM_SHARDS:-8}"
 N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-6}"
 SUCCESS_MIN="${SUCCESS_MIN:-0.2}"
 SUCCESS_MAX="${SUCCESS_MAX:-0.6}"
+STOCHASTIC_COUNTERFACTUALS="${STOCHASTIC_COUNTERFACTUALS:-}"
 SHARD_ID="$SLURM_ARRAY_TASK_ID"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
@@ -113,6 +123,7 @@ echo "NUM_SHARDS      = ${NUM_SHARDS}"
 echo "N_COUNTERFACTUALS = ${N_COUNTERFACTUALS}  (demo only)"
 echo "SUCCESS_MIN     = ${SUCCESS_MIN}  (demo only)"
 echo "SUCCESS_MAX     = ${SUCCESS_MAX}  (demo only)"
+echo "STOCHASTIC_COUNTERFACTUALS = ${STOCHASTIC_COUNTERFACTUALS:-<unset>}  (demo only)"
 echo "SHARD_ID        = ${SHARD_ID}"
 echo "=============================="
 
@@ -123,6 +134,11 @@ fi
 
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "${OUTPUT_DIR}/${ENV_NAME}"
+
+DEMO_EXTRA_ARGS=()
+if [[ -n "$STOCHASTIC_COUNTERFACTUALS" ]]; then
+    DEMO_EXTRA_ARGS+=(--stochastic-counterfactuals)
+fi
 
 case "$FEEDBACK_TYPE" in
 
@@ -153,6 +169,7 @@ case "$FEEDBACK_TYPE" in
             --num-shards           "$NUM_SHARDS" \
             --shard-id             "$SHARD_ID" \
             --output-dir           "$OUTPUT_DIR" \
+            "${DEMO_EXTRA_ARGS[@]+"${DEMO_EXTRA_ARGS[@]}"}" \
             --device cpu
         ;;
 esac

@@ -32,7 +32,8 @@
 #   FEEDBACK_TYPE       required: corr | demo
 #   ENV_NAME            default: mw_drawer-open-v2
 #   ORACLE_RUNS_BASE    default: runs/runs/chpc/oracle_sac_seeds  (relative to repo root)
-#   ORACLE_SEED         default: seed-1
+#   ORACLE_SEED         default: seed-1  (set to "" for a flat <env>/ layout with no
+#                                         seed subdir, e.g. /scratch/.../oracle_sac_1m)
 #   POOL_DIR            default: /scratch/general/vast/u1472210/mw_de_pool
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/mw_de_labels
 #   NUM_SHARDS          default: 8
@@ -93,7 +94,11 @@ SHARD_ID="$SLURM_ARRAY_TASK_ID"
 [[ "$OUTPUT_DIR"       != /* ]] && OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
 
 POOL_PATH="${POOL_DIR}/${ENV_NAME}/pool.npz"
-ORACLE_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}/${ORACLE_SEED}"
+if [[ -n "$ORACLE_SEED" ]]; then
+    ORACLE_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}/${ORACLE_SEED}"
+else
+    ORACLE_DIR="${ORACLE_RUNS_BASE}/${ENV_NAME}"
+fi
 
 echo "=============================="
 echo "SLURM_JOB_ID    = ${SLURM_JOB_ID:-}"

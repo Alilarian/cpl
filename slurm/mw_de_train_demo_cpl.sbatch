@@ -8,9 +8,11 @@
 # full dataset (dataset_kwargs.capacity=null, no budget clamping), and takes
 # an arbitrary caller-chosen seed list.
 #
-# Usage:
+# Usage (GPU -- see DEVICE below; the known-working GPU partition/account/qos
+# combo already used elsewhere in this repo is shown here):
 #   ENV_NAME=mw_button-press-v2 SEEDS="0 1 2" \
-#     sbatch --array=0-2 --account=<account> --partition=<partition> \
+#     sbatch --array=0-2 --gres=gpu:1 \
+#            --account=dbrown --partition=soc-gpu-class-grn --qos=soc-gpu-students-grn \
 #            [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #            slurm/mw_de_train_demo_cpl.sbatch
 #
@@ -22,9 +24,12 @@
 # sentinel exists) are automatically skipped.
 #
 # Resource overrides (command-line flags override #SBATCH defaults below):
-#   --time=HH:MM:SS     default: 48:00:00
+#   --time=HH:MM:SS     default: 48:00:00  (GPU training is likely much faster
+#                                           than this CPU-era default; lower it
+#                                           once you've seen one run's actual pace)
 #   --cpus-per-task=N   default: 4
 #   --mem=XG            default: 16G
+#   --gres=gpu:1         not requested by default -- pass explicitly (see DEVICE)
 #
 # Optional env overrides:
 #   ENV_NAME           default: mw_drawer-open-v2
@@ -37,6 +42,13 @@
 #   WANDB_PROJECT      default: mw-cpl-de
 #   CONTRASTIVE_BIAS   override alg_kwargs.contrastive_bias (e.g. 0.5)
 #   TOTAL_STEPS        override trainer_kwargs.total_steps  (e.g. 500000)
+#   DEVICE             default: cuda (scripts/train.py --device; use "cpu" to
+#                                     go back to CPU-only, matching
+#                                     mw_de_train.sbatch's convention -- "auto"
+#                                     also works but silently falls back to CPU
+#                                     if no GPU was actually allocated, which
+#                                     defeats requesting --gres=gpu:1 without
+#                                     you noticing)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -69,6 +81,7 @@ DEMO_LABEL_FILE="${DEMO_LABEL_FILE:-demo_labels_K9.npz}"
 RUNS_DIR="${RUNS_DIR:-runs/mw_de_demo_cpl}"
 CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
 CONFIG_FILE="${CONFIG_FILE:-demo_cpl.yaml}"
+DEVICE="${DEVICE:-cuda}"
 
 read -r -a SEED_ARR <<< "$SEEDS"
 SEED="${SEED_ARR[$SLURM_ARRAY_TASK_ID]:-}"
@@ -92,6 +105,7 @@ echo "SEED           = ${SEED}"
 echo "CONFIG         = ${CONFIG_PATH}"
 echo "LABELS         = ${LABELS_NPZ}"
 echo "RUN_PATH       = ${RUN_PATH}"
+echo "DEVICE         = ${DEVICE}"
 echo "=============================="
 
 if [[ -f "${RUN_PATH}/training_complete" ]]; then
@@ -126,7 +140,7 @@ python3 "${REPO_ROOT}/scripts/train.py" \
     --config  "$CONFIG_PATH" \
     --path    "$RUN_PATH"   \
     --seed    "$SEED"       \
-    --device  cpu           \
+    --device  "$DEVICE"     \
     --set "eval_env=${ENV_NAME}"                          \
     --set "dataset_kwargs.path=${LABELS_NPZ}"             \
     --set "dataset_kwargs.capacity=null"                  \

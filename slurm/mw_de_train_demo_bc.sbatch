@@ -13,16 +13,19 @@
 # (see TrainingUtils.get_model_ids), so the same converted pickle needs to be
 # copied to each seed-suffixed filename you plan to submit.
 #
-# Requires a GPU: train_bc.py hardcodes device="cuda:0" for imitation's BC
-# trainer -- pass --gres=gpu:1 (or your cluster's GPU request flag).
+# Runs on CPU: train_bc.py used to hardcode device="cuda:0" for imitation's BC
+# trainer via a duplicate bc.BC(...) call that shadowed an earlier, correct
+# device=TrainingUtils.get_device() call -- fixed (dead code removed) so it now
+# picks CPU automatically when no GPU is allocated. Pass --gres=gpu:1 and set
+# DEVICE=cuda below to go back to GPU.
 # Requires multi-type-feedback's own dependencies (imitation, stable_baselines3,
 # gymnasium) in the active conda env -- this script does not install anything;
 # run multi-type-feedback/setup.sh (pip install -e .) first if imports fail.
 #
-# Usage:
+# Usage (CPU):
 #   ENV_NAME=mw_drawer-open-v2 SEEDS="0 1 2" \
-#     sbatch --array=0-2 --gres=gpu:1 \
-#            --account=dbrown --partition=soc-gpu-class-grn --qos=soc-gpu-students-grn \
+#     sbatch --array=0-2 \
+#            --account=dbrown --partition=coe-class-grn --qos=coe-students-grn \
 #            slurm/mw_de_train_demo_bc.sbatch
 #
 # SEEDS and --array must agree: --array=0-(N_SEEDS-1) (0-indexed position into
@@ -42,9 +45,9 @@
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=04:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 

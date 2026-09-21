@@ -8,12 +8,11 @@
 # full dataset (dataset_kwargs.capacity=null, no budget clamping), and takes
 # an arbitrary caller-chosen seed list.
 #
-# Usage (GPU -- see DEVICE below; the known-working GPU partition/account/qos
-# combo already used elsewhere in this repo is shown here):
+# Usage (CPU):
 #   ENV_NAME=mw_button-press-v2 SEEDS="0 1 2" \
-#     sbatch --array=0-2 --gres=gpu:1 \
-#            --account=dbrown --partition=soc-gpu-class-grn --qos=soc-gpu-students-grn \
-#            [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
+#     sbatch --array=0-2 \
+#            --account=dbrown --partition=coe-class-grn --qos=coe-students-grn \
+#            [--time=D-HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #            slurm/mw_de_train_demo_cpl.sbatch
 #
 # SEEDS and --array must agree: --array=0-(N_SEEDS-1) (0-indexed position into
@@ -24,12 +23,9 @@
 # sentinel exists) are automatically skipped.
 #
 # Resource overrides (command-line flags override #SBATCH defaults below):
-#   --time=HH:MM:SS     default: 48:00:00  (GPU training is likely much faster
-#                                           than this CPU-era default; lower it
-#                                           once you've seen one run's actual pace)
-#   --cpus-per-task=N   default: 4
+#   --time=D-HH:MM:SS   default: 4-00:00:00 (4 days)
+#   --cpus-per-task=N   default: 8
 #   --mem=XG            default: 16G
-#   --gres=gpu:1         not requested by default -- pass explicitly (see DEVICE)
 #
 # Optional env overrides:
 #   ENV_NAME           default: mw_drawer-open-v2
@@ -42,19 +38,14 @@
 #   WANDB_PROJECT      default: mw-cpl-de
 #   CONTRASTIVE_BIAS   override alg_kwargs.contrastive_bias (e.g. 0.5)
 #   TOTAL_STEPS        override trainer_kwargs.total_steps  (e.g. 500000)
-#   DEVICE             default: cuda (scripts/train.py --device; use "cpu" to
-#                                     go back to CPU-only, matching
-#                                     mw_de_train.sbatch's convention -- "auto"
-#                                     also works but silently falls back to CPU
-#                                     if no GPU was actually allocated, which
-#                                     defeats requesting --gres=gpu:1 without
-#                                     you noticing)
+#   DEVICE             default: cpu (scripts/train.py --device; set to "cuda"
+#                                    to go back to GPU, and pass --gres=gpu:1)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=16G
-#SBATCH --time=48:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err
 
@@ -81,7 +72,7 @@ DEMO_LABEL_FILE="${DEMO_LABEL_FILE:-demo_labels_K9.npz}"
 RUNS_DIR="${RUNS_DIR:-runs/mw_de_demo_cpl}"
 CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
 CONFIG_FILE="${CONFIG_FILE:-demo_cpl.yaml}"
-DEVICE="${DEVICE:-cuda}"
+DEVICE="${DEVICE:-cpu}"
 
 read -r -a SEED_ARR <<< "$SEEDS"
 SEED="${SEED_ARR[$SLURM_ARRAY_TASK_ID]:-}"

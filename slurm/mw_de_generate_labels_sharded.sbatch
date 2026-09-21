@@ -97,6 +97,7 @@ N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-6}"
 SUCCESS_MIN="${SUCCESS_MIN:-0.2}"
 SUCCESS_MAX="${SUCCESS_MAX:-0.6}"
 STOCHASTIC_COUNTERFACTUALS="${STOCHASTIC_COUNTERFACTUALS:-}"
+MAX_SEGMENTS="${MAX_SEGMENTS:-}"
 SHARD_ID="$SLURM_ARRAY_TASK_ID"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
@@ -124,6 +125,11 @@ echo "N_COUNTERFACTUALS = ${N_COUNTERFACTUALS}  (demo only)"
 echo "SUCCESS_MIN     = ${SUCCESS_MIN}  (demo only)"
 echo "SUCCESS_MAX     = ${SUCCESS_MAX}  (demo only)"
 echo "STOCHASTIC_COUNTERFACTUALS = ${STOCHASTIC_COUNTERFACTUALS:-<unset>}  (demo only)"
+echo "MAX_SEGMENTS    = ${MAX_SEGMENTS:-<unset, full pool>}  (demo only; applied PER SHARD "
+echo "                  before shard-splitting -- see generate_demo_labels.py; also renames "
+echo "                  shard output to demo_labels_K<K>_sanity<N>_shard*of<NUM_SHARDS>.npz, "
+echo "                  so merge with scripts/merge_label_shards.py directly, not "
+echo "                  slurm/merge_label_shards.sbatch's auto K-detection)"
 echo "SHARD_ID        = ${SHARD_ID}"
 echo "=============================="
 
@@ -138,6 +144,9 @@ mkdir -p "${OUTPUT_DIR}/${ENV_NAME}"
 DEMO_EXTRA_ARGS=()
 if [[ -n "$STOCHASTIC_COUNTERFACTUALS" ]]; then
     DEMO_EXTRA_ARGS+=(--stochastic-counterfactuals)
+fi
+if [[ -n "$MAX_SEGMENTS" ]]; then
+    DEMO_EXTRA_ARGS+=(--max-segments "$MAX_SEGMENTS")
 fi
 
 case "$FEEDBACK_TYPE" in

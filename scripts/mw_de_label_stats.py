@@ -43,14 +43,15 @@ ENVS = [
     "mw_sweep-into-v2",
 ]
 
-LABEL_FILES = {
-    "pref"             : "pref_labels.npz",
-    "corr"             : "corr_labels.npz",
-    "demo"             : "demo_labels_K7.npz",
-    "seq_estop"        : "seq_estop_labels.npz",
-    "scalar"           : "scalar_labels.npz",
-    "credit_assignment": "credit_labels.npz",
-}
+def label_files(demo_k):
+    return {
+        "pref"             : "pref_labels.npz",
+        "corr"             : "corr_labels.npz",
+        "demo"             : f"demo_labels_K{demo_k}.npz",
+        "seq_estop"        : "seq_estop_labels.npz",
+        "scalar"           : "scalar_labels.npz",
+        "credit_assignment": "credit_labels.npz",
+    }
 
 BUDGETS = [50, 100, 300, 600, 1000, 2000, 5000, 10000, 20000, 40000, 100000]
 
@@ -342,6 +343,10 @@ def main():
     parser.add_argument("--output-dir",  type=str, default="results")
     parser.add_argument("--envs",        nargs="+", default=ENVS)
     parser.add_argument("--seed",        type=int, default=42)
+    parser.add_argument("--demo-k",      type=int, default=7,
+                        help="K in demo_labels_K<K>.npz to look for (default: 7, the "
+                             "long-standing default choice-set size). Set to the actual "
+                             "K used for a given generation run, e.g. 9.")
     args = parser.parse_args()
 
     np.random.seed(args.seed)
@@ -350,6 +355,7 @@ def main():
     csv_path = os.path.join(args.output_dir, "mw_de_label_stats.csv")
 
     all_rows = []
+    label_file_map = label_files(args.demo_k)
 
     with open(txt_path, "w") as txt:
         for env in args.envs:
@@ -357,7 +363,7 @@ def main():
             print(header)
             txt.write(header + "\n")
 
-            for ftype, fname in LABEL_FILES.items():
+            for ftype, fname in label_file_map.items():
                 path = os.path.join(args.labels_dir, env, fname)
                 if not os.path.exists(path):
                     msg = f"  [{ftype}]: MISSING"

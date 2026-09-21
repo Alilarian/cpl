@@ -89,7 +89,7 @@ REPO_ROOT="$SUBMIT_DIR"
 
 ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
-ORACLE_SEED="${ORACLE_SEED:-seed-1}"
+ORACLE_SEED="${ORACLE_SEED-seed-1}"
 POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
 NUM_SHARDS="${NUM_SHARDS:-8}"

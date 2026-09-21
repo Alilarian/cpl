@@ -23,6 +23,12 @@ Usage:
         --oracle-runs-base /scratch/general/vast/u1472210/oracle_sac_1m \\
         --envs mw_button-press-v2 mw_door-open-v2 mw_drawer-open-v2 mw_plate-slide-v2 \\
         --success-min 0.3 --success-max 0.5 --n-checkpoints 5
+
+    # oracle_sac_seeds layout (<env>/<seed>/log.csv) needs --oracle-seed:
+    python scripts/select_checkpoints_by_success.py \\
+        --oracle-runs-base runs/runs/chpc/oracle_sac_seeds --oracle-seed seed-1 \\
+        --envs mw_button-press-v2 mw_door-open-v2 mw_drawer-open-v2 mw_plate-slide-v2 \\
+        --success-min 0.3 --success-max 0.4 --n-checkpoints 5
 """
 
 import argparse
@@ -83,6 +89,10 @@ def main():
     parser.add_argument("--oracle-runs-base", type=str, required=True,
                         help="Base dir with one subdir per env, e.g. "
                              "/scratch/general/vast/u1472210/oracle_sac_1m")
+    parser.add_argument("--oracle-seed", type=str, default="",
+                        help="Seed subdir under --oracle-runs-base/<env>/, e.g. 'seed-1' "
+                             "(needed for oracle_sac_seeds' <env>/<seed>/log.csv layout; "
+                             "leave unset for a flat <env>/log.csv layout like oracle_sac_1m).")
     parser.add_argument("--envs", nargs="+", required=True)
     parser.add_argument("--checkpoint-interval", type=int, default=20000,
                         help="Only consider steps that are multiples of this and that "
@@ -94,7 +104,8 @@ def main():
     args = parser.parse_args()
 
     for env in args.envs:
-        run_dir = os.path.join(args.oracle_runs_base, env)
+        run_dir = os.path.join(args.oracle_runs_base, env, args.oracle_seed) if args.oracle_seed \
+            else os.path.join(args.oracle_runs_base, env)
         print(f"{'='*65}\n{env}\n{'='*65}")
 
         try:

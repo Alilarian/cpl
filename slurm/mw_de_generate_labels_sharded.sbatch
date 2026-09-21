@@ -36,7 +36,17 @@
 #   POOL_DIR            default: /scratch/general/vast/u1472210/mw_de_pool
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/mw_de_labels
 #   NUM_SHARDS          default: 8
-#   N_COUNTERFACTUALS   default: 6   (demo only; K = N_COUNTERFACTUALS + 1)
+#   N_COUNTERFACTUALS   default: 6   (demo only; K = N_COUNTERFACTUALS + 1;
+#                                     n_tiers = N_COUNTERFACTUALS - 1, e.g. 8 -> 7
+#                                     tier checkpoints + 1 original pool segment)
+#   SUCCESS_MIN         default: 0.2 (demo only; lower bound of eval/success for
+#                                     the stratified tier counterfactual checkpoints)
+#   SUCCESS_MAX         default: 0.6 (demo only; upper bound, see --success-min/max
+#                                     in generate_demo_labels.py. Does not affect
+#                                     the expert checkpoint or the pool's own
+#                                     "original" segment, whose quality is instead
+#                                     controlled by how the pool itself was built
+#                                     -- see scripts/verify_pool_checkpoint_success.py)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -74,6 +84,8 @@ POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/mw_de_labels}"
 NUM_SHARDS="${NUM_SHARDS:-8}"
 N_COUNTERFACTUALS="${N_COUNTERFACTUALS:-6}"
+SUCCESS_MIN="${SUCCESS_MIN:-0.2}"
+SUCCESS_MAX="${SUCCESS_MAX:-0.6}"
 SHARD_ID="$SLURM_ARRAY_TASK_ID"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
@@ -93,6 +105,9 @@ echo "POOL_PATH       = ${POOL_PATH}"
 echo "ORACLE_DIR      = ${ORACLE_DIR}"
 echo "OUTPUT_DIR      = ${OUTPUT_DIR}"
 echo "NUM_SHARDS      = ${NUM_SHARDS}"
+echo "N_COUNTERFACTUALS = ${N_COUNTERFACTUALS}  (demo only)"
+echo "SUCCESS_MIN     = ${SUCCESS_MIN}  (demo only)"
+echo "SUCCESS_MAX     = ${SUCCESS_MAX}  (demo only)"
 echo "SHARD_ID        = ${SHARD_ID}"
 echo "=============================="
 
@@ -125,6 +140,8 @@ case "$FEEDBACK_TYPE" in
             --run-dir              "$ORACLE_DIR" \
             --n-counterfactuals    "$N_COUNTERFACTUALS" \
             --checkpoints-per-tier 2 \
+            --success-min          "$SUCCESS_MIN" \
+            --success-max          "$SUCCESS_MAX" \
             --min-adv-gap          0.0 \
             --mcmc-samples         16 \
             --score-batch-size     32 \

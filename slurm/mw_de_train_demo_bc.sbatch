@@ -1,47 +1,50 @@
 #!/bin/bash
-# Train the BC baseline (multi-type-feedback/multi_type_feedback/train_bc.py) on
-# the demo track (K-index 0, no counterfactuals -- see
-# scripts/extract_demo_track_for_bc.py) of demo_labels_K<K>.npz, for one
-# MetaWorld env across N_SEEDS seeds via a SLURM array.
+# Train BC (research/algs/bc.py::BehaviorCloning) on the demo track (K-index 0,
+# no counterfactuals) of demo_labels_K<K>.npz, for one MetaWorld env across
+# N_SEEDS seeds via a SLURM array.
 #
-# Prerequisite (run once BEFORE submitting this, not part of this script): for
-# EVERY seed you submit here, produce the demo pickle train_bc.py expects at
-#   multi-type-feedback/feedback_regen/<ALGORITHM>_<metaworld-env>_<seed>.pkl
-# via scripts/extract_demo_track_for_bc.py + convert_research_pool_to_demos.py.
-# The demo DATA doesn't depend on the BC seed (it's the same K=0 track for every
-# seed), but train_bc.py's own filename convention embeds --seed regardless
-# (see TrainingUtils.get_model_ids), so the same converted pickle needs to be
-# copied to each seed-suffixed filename you plan to submit.
+# Uses this repo's own scripts/train.py pipeline -- same structure as
+# mw_de_train_demo_cpl.sbatch -- NOT multi-type-feedback's train_bc.py (that
+# needs a separate imitation/stable-baselines3/metaworld-from-git install and
+# is not what this script runs).
 #
-# Runs on CPU: train_bc.py used to hardcode device="cuda:0" for imitation's BC
-# trainer via a duplicate bc.BC(...) call that shadowed an earlier, correct
-# device=TrainingUtils.get_device() call -- fixed (dead code removed) so it now
-# picks CPU automatically when no GPU is allocated. Pass --gres=gpu:1 and set
-# DEVICE=cuda below to go back to GPU.
-# Requires multi-type-feedback's own dependencies (imitation, stable_baselines3,
-# gymnasium) in the active conda env -- this script does not install anything;
-# run multi-type-feedback/setup.sh (pip install -e .) first if imports fail.
+# Prerequisite (run once BEFORE submitting this, not part of this script), per
+# env, to produce the flat (no-K-dimension) BCBuffer-compatible npz:
+#   python scripts/extract_demo_track_for_bc.py \
+#       --demo-labels <LABELS_DIR>/<env>/demo_labels_K<K>.npz \
+#       --output-dir  datasets/demo_track_bc
 #
 # Usage (CPU):
-#   ENV_NAME=mw_drawer-open-v2 SEEDS="0 1 2" \
+#   ENV_NAME=mw_button-press-v2 SEEDS="0 1 2" \
 #     sbatch --array=0-2 \
 #            --account=dbrown --partition=coe-class-grn --qos=coe-students-grn \
+#            [--time=D-HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #            slurm/mw_de_train_demo_bc.sbatch
 #
 # SEEDS and --array must agree: --array=0-(N_SEEDS-1) (0-indexed position into
 # SEEDS, not the seed value itself).
 #
+# Resume: if a job is killed by walltime, resubmit the same command -- the
+# trainer auto-resumes from final_model.pt; completed runs (training_complete
+# sentinel exists) are automatically skipped.
+#
+# Resource overrides (command-line flags override #SBATCH defaults below):
+#   --time=D-HH:MM:SS   default: 2-00:00:00 (2 days)
+#   --cpus-per-task=N   default: 8
+#   --mem=XG            default: 16G
+#
 # Optional env overrides:
-#   ENV_NAME       default: mw_drawer-open-v2   (this repo's mw_<name>-v2 form)
-#   SEEDS          default: "0 1 2"
-#   ALGORITHM      default: research_demo   (must match what you passed to
-#                                            convert_research_pool_to_demos.py's
-#                                            --out when building the pkl -- it's
-#                                            embedded in the pkl filename AND the
-#                                            saved policy dir name)
-#   N_EPOCHS       default: 20
-#   BATCH_SIZE     default: 32
-#   MTF_DIR        default: multi-type-feedback  (relative to repo root)
+#   ENV_NAME           default: mw_drawer-open-v2
+#   SEEDS              default: "0 1 2"
+#   BC_DATA_DIR        default: datasets/demo_track_bc
+#   BC_DATA_FILE       default: demo_track_bc.npz
+#   RUNS_DIR           default: runs/mw_de_demo_bc
+#   CONFIG_DIR         default: configs/mw_state_dense
+#   CONFIG_FILE        default: demo_bc.yaml
+#   WANDB_PROJECT      default: mw-cpl-de
+#   TOTAL_STEPS        override trainer_kwargs.total_steps  (e.g. 500000)
+#   DEVICE             default: cpu (scripts/train.py --device; set to "cuda"
+#                                    to go back to GPU, and pass --gres=gpu:1)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -69,10 +72,12 @@ REPO_ROOT="$SUBMIT_DIR"
 
 ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 SEEDS="${SEEDS:-0 1 2}"
-ALGORITHM="${ALGORITHM:-research_demo}"
-N_EPOCHS="${N_EPOCHS:-20}"
-BATCH_SIZE="${BATCH_SIZE:-32}"
-MTF_DIR="${MTF_DIR:-multi-type-feedback}"
+BC_DATA_DIR="${BC_DATA_DIR:-datasets/demo_track_bc}"
+BC_DATA_FILE="${BC_DATA_FILE:-demo_track_bc.npz}"
+RUNS_DIR="${RUNS_DIR:-runs/mw_de_demo_bc}"
+CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
+CONFIG_FILE="${CONFIG_FILE:-demo_bc.yaml}"
+DEVICE="${DEVICE:-cpu}"
 
 read -r -a SEED_ARR <<< "$SEEDS"
 SEED="${SEED_ARR[$SLURM_ARRAY_TASK_ID]:-}"
@@ -81,39 +86,62 @@ if [[ -z "$SEED" ]]; then
     exit 1
 fi
 
-MW_NAME="${ENV_NAME#mw_}"
-MTF_ENV="metaworld-${MW_NAME}"
+[[ "$BC_DATA_DIR" != /* ]] && BC_DATA_DIR="${REPO_ROOT}/${BC_DATA_DIR}"
+[[ "$RUNS_DIR"    != /* ]] && RUNS_DIR="${REPO_ROOT}/${RUNS_DIR}"
 
-[[ "$MTF_DIR" != /* ]] && MTF_DIR="${REPO_ROOT}/${MTF_DIR}"
-
-DEMO_PKL="${MTF_DIR}/feedback_regen/${ALGORITHM}_${MTF_ENV}_${SEED}.pkl"
-MODEL_ID="${ALGORITHM}_${MTF_ENV}_${SEED}_default_${SEED}"
+CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/${CONFIG_FILE}"
+DATA_NPZ="${BC_DATA_DIR}/${ENV_NAME}/${BC_DATA_FILE}"
+RUN_PATH="${RUNS_DIR}/${ENV_NAME}/bc_s${SEED}"
 
 echo "=============================="
-echo "SLURM_JOB_ID  = ${SLURM_JOB_ID:-}"
-echo "ARRAY_TASK_ID = ${SLURM_ARRAY_TASK_ID}"
-echo "ENV_NAME      = ${ENV_NAME}"
-echo "MTF_ENV       = ${MTF_ENV}"
-echo "SEED          = ${SEED}"
-echo "DEMO_PKL      = ${DEMO_PKL}"
-echo "SAVE_PATH     = ${MTF_DIR}/agents/BC_${MODEL_ID}"
+echo "SLURM_JOB_ID   = ${SLURM_JOB_ID:-}"
+echo "ARRAY_TASK_ID  = ${SLURM_ARRAY_TASK_ID}"
+echo "ENV_NAME       = ${ENV_NAME}"
+echo "SEED           = ${SEED}"
+echo "CONFIG         = ${CONFIG_PATH}"
+echo "DATA           = ${DATA_NPZ}"
+echo "RUN_PATH       = ${RUN_PATH}"
+echo "DEVICE         = ${DEVICE}"
 echo "=============================="
 
-if [[ ! -f "$DEMO_PKL" ]]; then
-    echo "ERROR: demo pickle not found: ${DEMO_PKL}"
-    echo "Run scripts/extract_demo_track_for_bc.py + convert_research_pool_to_demos.py first"
-    echo "(--out must match this exact path -- ALGORITHM=${ALGORITHM}, seed=${SEED})."
+if [[ -f "${RUN_PATH}/training_complete" ]]; then
+    echo "Already completed (training_complete sentinel exists) — skipping."
+    exit 0
+fi
+
+if [[ ! -f "$DATA_NPZ" ]]; then
+    echo "ERROR: data file not found: ${DATA_NPZ}"
+    echo "Run scripts/extract_demo_track_for_bc.py first."
+    exit 1
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "ERROR: config not found: ${CONFIG_PATH}"
     exit 1
 fi
 
 . "${REPO_ROOT}/setup_shell.sh"
-cd "$MTF_DIR"
+mkdir -p "$RUN_PATH"
 
-python3 multi_type_feedback/train_bc.py \
-    --algorithm "$ALGORITHM" \
-    --environment "$MTF_ENV" \
-    --seed "$SEED" \
-    --n-epochs "$N_EPOCHS" \
-    --batch-size "$BATCH_SIZE"
+EXTRA_SETS=()
+[[ -n "${TOTAL_STEPS:-}" ]] && EXTRA_SETS+=(--set "trainer_kwargs.total_steps=${TOTAL_STEPS}")
 
-echo "Done — BC policy saved to ${MTF_DIR}/agents/BC_${MODEL_ID}/bc_policy.zip"
+# WandB
+# Run name: "<env>/bc_s<seed>"  — unique across all envs
+# Group:    "<env>"              — groups runs per env in the UI
+export WANDB_PROJECT="${WANDB_PROJECT:-mw-cpl-de}"
+export WANDB_RUN_NAME="${ENV_NAME}/bc_s${SEED}"
+export WANDB_GROUP="${ENV_NAME}"
+
+python3 "${REPO_ROOT}/scripts/train.py" \
+    --config  "$CONFIG_PATH" \
+    --path    "$RUN_PATH"   \
+    --seed    "$SEED"       \
+    --device  "$DEVICE"     \
+    --set "eval_env=${ENV_NAME}"            \
+    --set "dataset_kwargs.path=${DATA_NPZ}" \
+    --set "dataset_kwargs.capacity=null"    \
+    "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}"
+
+# Write sentinel only on clean exit (all steps reached).
+touch "${RUN_PATH}/training_complete"
+echo "Training complete — sentinel written to ${RUN_PATH}/training_complete"

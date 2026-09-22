@@ -1,6 +1,6 @@
 # Make sure we have the conda environment set up.
 CONDA_PATH=/uufs/chpc.utah.edu/sys/installdir/r8/miniconda3/25.9.1/miniconda3/bin/activate
-CONDA_ENV_NAME=cpl
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-cpl}"
 REPO_PATH="${REPO_ROOT:-path/to/your/repo}"
 USE_MUJOCO_PY=true # For using mujoco py
 WANDB_API_KEY="${WANDB_API_KEY:-}" # Set via `export WANDB_API_KEY=...` in your shell profile before sourcing this script, or run `wandb login` instead and leave this unset.
@@ -19,6 +19,13 @@ else
 fi
 cd $REPO_PATH
 unset DISPLAY # Make sure display is not set or it will prevent scripts from running in headless mode.
+
+# Print which env actually got activated -- CONDA_ENV_NAME is easy to omit or
+# drop when copy-pasting a submit command, and the only other symptom is a
+# traceback deep inside training (e.g. "Torch not compiled with CUDA enabled"
+# if cpl_gpu was intended but the plain cpl env got used instead). Surfacing
+# it here makes that immediately visible in every job's .out log.
+echo "Active conda env: ${CONDA_ENV_NAME} ($(python -c 'import sys; print(sys.executable)' 2>/dev/null))"
 
 # Install gymnasium if not present — required for LunarLander.
 # gym 0.23's box2d is incompatible with numpy 2.x; gymnasium's box2d fixes this.

@@ -102,6 +102,7 @@ echo "CONFIG         = ${CONFIG_PATH}"
 echo "DATA           = ${DATA_NPZ}"
 echo "RUN_PATH       = ${RUN_PATH}"
 echo "DEVICE         = ${DEVICE}"
+echo "CONDA_ENV_NAME = ${CONDA_ENV_NAME:-cpl (default)}"
 echo "=============================="
 
 if [[ -f "${RUN_PATH}/training_complete" ]]; then
@@ -121,6 +122,19 @@ fi
 
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
+
+# Fail fast and clearly if DEVICE=cuda was requested but the active conda env's
+# torch can't actually see a GPU -- otherwise this surfaces ~20s later as a
+# confusing "Torch not compiled with CUDA enabled" traceback deep inside model
+# construction, with no indication that CONDA_ENV_NAME is the likely cause.
+if [[ "$DEVICE" == "cuda" ]]; then
+    if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+        echo "ERROR: DEVICE=cuda requested, but torch.cuda.is_available() is False"
+        echo "in the active conda env (CONDA_ENV_NAME=${CONDA_ENV_NAME:-cpl (default)})."
+        echo "Did you forget to set CONDA_ENV_NAME=cpl_gpu (or your GPU-capable env)?"
+        exit 1
+    fi
+fi
 
 # Match PyTorch's CPU intra-op thread pool to what SLURM actually allocated --
 # nothing else in this codebase sets this, so without it PyTorch's own default

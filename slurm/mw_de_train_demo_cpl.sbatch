@@ -116,6 +116,12 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
 
+# Match PyTorch's CPU intra-op thread pool to what SLURM actually allocated --
+# nothing else in this codebase sets this, so without it PyTorch's own default
+# detection is trusted implicitly.
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+
 EXTRA_SETS=()
 [[ -n "${CONTRASTIVE_BIAS:-}" ]] && EXTRA_SETS+=(--set "alg_kwargs.contrastive_bias=${CONTRASTIVE_BIAS}")
 [[ -n "${TOTAL_STEPS:-}" ]]      && EXTRA_SETS+=(--set "trainer_kwargs.total_steps=${TOTAL_STEPS}")

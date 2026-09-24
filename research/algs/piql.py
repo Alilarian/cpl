@@ -288,20 +288,30 @@ class CreditAssignmentPIQL(PIQL):
         return loss, accuracy
 
 
-class EstopPIQL(PIQL):
+class EstopHoldPIQL(PIQL):
     """
-    P-IQL generalized to (non-sequential) e-stop data: EstopBuffer
-    ((B,2,T,...), index 0 = halt prefix, index 1 = full trajectory, padded tail
-    repeats the last (s,a)). Reward loss is EstopCPL/RewardEstopCPL's discounted
-    softplus over J_pi(prefix) - J_pi(full), not Bradley-Terry BCE.
+    P-IQL generalized to holding-model e-stop data: EstopHoldBuffer
+    ((B,2,T,...), index 0 = hold suffix H_tau (preferred), index 1 = original
+    suffix C_tau, both stored ZERO-padded to T with a shared real length
+    batch["horizon"]).
 
-    Two distinct discount concepts here -- do not conflate them:
-      - reward_discount: the geometric discount inside the reward loss's J_pi
-        sum over T (matches EstopCPL's own `discount` hyperparameter, e.g. 0.99;
-        keep this matched to estop_cpl.yaml's value for a fair comparison).
-      - transition_discount: the flat per-transition discount fed to the IQL
-        Bellman target, matching every other PIQL variant's dataset-level
-        discount=0.99 convention. Unrelated to reward_discount above.
+    Base PIQL.train_step doesn't just feed _get_reward_batch's (obs, action)
+    to the reward net -- it also treats each row as a literal length-T
+    transition SEQUENCE for value/critic/actor training via the obs[:, :-1] /
+    obs[:, 1:] shift (see PIQL.train_step). Feeding the zero-padded tail
+    through unchanged would inject synthetic "teleport to the zero vector"
+    transitions into value/critic/actor training. _get_reward_batch therefore
+    rewrites the padded tail to repeat each row's last REAL (s, a) before
+    anything touches the network -- including the reward net's own forward
+    pass, which otherwise would be queried on out-of-distribution zero
+    vectors. The reward loss itself is unaffected: _get_reward_loss_and_accuracy
+    masks by batch["horizon"] regardless of how the tail was filled in.
+
+    reward_discount (the reward loss's own J_pi discount, matching
+    EstopHoldCPL's `discount`) and transition_discount (the flat per-
+    transition discount fed to the IQL Bellman target, matching every other
+    PIQL variant's dataset-level convention) are two distinct concepts --
+    do not conflate them.
     """
 
     def __init__(
@@ -320,16 +330,32 @@ class EstopPIQL(PIQL):
 
     def _get_reward_batch(self, batch: Dict):
         B, _, T, _ = batch["obs"].shape
-        obs = batch["obs"].reshape(B * 2, T, -1)
-        action = batch["action"].reshape(B * 2, T, -1)
+        obs = batch["obs"].reshape(B * 2, T, -1).clone()
+        action = batch["action"].reshape(B * 2, T, -1).clone()
+
+        horizon = batch["horizon"].unsqueeze(1).expand(-1, 2).reshape(-1)  # (B*2,)
+        time = torch.arange(T, device=obs.device)
+        pad_mask = time.unsqueeze(0) >= horizon.unsqueeze(1)  # (B*2, T), True beyond real length
+
+        row = torch.arange(B * 2, device=obs.device)
+        last_idx = (horizon - 1).clamp(min=0)
+        last_obs = obs[row, last_idx].unsqueeze(1).expand(-1, T, -1)
+        last_act = action[row, last_idx].unsqueeze(1).expand(-1, T, -1)
+        obs[pad_mask] = last_obs[pad_mask]
+        action[pad_mask] = last_act[pad_mask]
+
         discount = self.transition_discount * torch.ones(B * 2, T, device=obs.device, dtype=obs.dtype)
         return obs, action, discount
 
     def _get_reward_loss_and_accuracy(self, reward: torch.Tensor, batch: Dict):
         B, _, T, _ = batch["obs"].shape
-        per_step = reward.mean(dim=0).reshape(B, 2, T)
+        per_step = reward.mean(dim=0).reshape(B, 2, T)  # (B, 2, T)
+
+        time = torch.arange(T, device=per_step.device)
+        mask = (time.unsqueeze(0) < batch["horizon"].unsqueeze(1)).to(dtype=per_step.dtype)  # (B, T)
         discounts = self.reward_discount ** torch.arange(T, device=per_step.device, dtype=per_step.dtype)
-        J = (per_step * discounts).sum(dim=-1)  # (B, 2)
+
+        J = (per_step * mask.unsqueeze(1) * discounts).sum(dim=-1)  # (B, 2)
         logit = self.beta_prime * (J[:, 0] - J[:, 1])
         loss = F.softplus(-logit).mean()
         with torch.no_grad():

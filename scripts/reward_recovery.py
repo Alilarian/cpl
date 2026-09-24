@@ -4,9 +4,9 @@ Reward recovery sanity check (Phase-1 sanity check #2 in the reward-CPL baseline
 For a feedback type, computes the Spearman correlation of each scorer's segment
 score against the oracle ranking already stored in the frozen *_labels.npz:
   - r_theta(s,a) segment scores, from a trained RewardCPL/RewardCreditCPL/
-    RewardEstopCPL checkpoint (Phase 1 of the reward-model baseline).
+    RewardEstopHoldCPL checkpoint (Phase 1 of the reward-model baseline).
   - alpha * log pi(a|s) segment scores, from the matching ARIC checkpoint
-    (CPL/DemoCPL/CreditAssignmentCPL/EstopCPL).
+    (CPL/DemoCPL/CreditAssignmentCPL/EstopHoldCPL).
 Both scorers are run through the exact same score_segments reshape used to train
 them, so this also cross-checks that the two scorers are being compared on
 identical segments.

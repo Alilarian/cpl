@@ -1,9 +1,9 @@
 
-alg: EstopCPL
+alg: EstopHoldCPL
 alg_kwargs:
   alpha: 0.1
-  discount: 0.99         # γ for the discounted advantage sum J_π(σ_{0:t})
-  beta_prime: 1.0        # β' logit scaling in L = -log σ(β'(J_prefix − J_full))
+  discount: 0.99         # γ for the discounted advantage sum J_π(σ), from the suffix start
+  beta_prime: 1.0        # β' logit scaling in L = softplus(-β'(J_hold − J_orig))
   bc_steps: 20000        # shared BC warmup from bc_pool
   bc_coeff: 0.0
   # bc_pool_path: datasets/mw/bc_pool/mw_drawer-open-v2/bc_pool.npz
@@ -25,12 +25,14 @@ checkpoint: null
 
 eval_env: mw_drawer-open-v2
 
-# estop_labels.npz has (M, 2, T, ...) format with stop_time (M,):
-#   index 0 = halt prefix σ_{0:τ}  (preferred)
-#   index 1 = full trajectory σ_{0:T}  (non-preferred)
-dataset: EstopBuffer
+# estop_hold_labels.npz has (M, 2, T, ...) format, ZERO-padded beyond a shared
+# per-pair `horizon` (unlike estop_labels.npz's repeat-padded halt prefix):
+#   index 0 = hold suffix H_tau  (preferred -- real simulated holding rollout)
+#   index 1 = original suffix C_tau  (non-preferred -- recorded continuation)
+# See generate_estop_hold_labels.py / research/datasets/estop_hold_buffer.py.
+dataset: EstopHoldBuffer
 dataset_kwargs:
-  path: datasets/mw/estop_labels/mw_drawer-open-v2/estop_labels.npz
+  path: datasets/mw/estop_hold_labels/mw_drawer-open-v2/estop_hold_labels.npz
   batch_size: 96
   reward_scale: 1.0
   reward_shift: 0.0

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from research.utils import utils
 
 from .off_policy_algorithm import OffPolicyAlgorithm
+from .scoring import score_segments
 
 
 def biased_bce_with_logits(adv1, adv2, y, bias=1.0):
@@ -445,35 +446,31 @@ class CreditAssignmentCPL(CPL):
                     accuracy=accuracy.item())
 
 
-class EstopCPL(DemoCPL):
+class EstopHoldCPL(DemoCPL):
     """
-    CPL variant trained on (non-sequential) E-stop feedback.
+    CPL variant trained on holding-model E-stop feedback (EstopHoldBuffer):
+    at generation time, a frozen oracle compared a physically simulated
+    holding rollout against the recorded continuation and only emitted a pair
+    where holding won by more than a fixed threshold. Each training pair:
+        index 0: hold suffix H_tau       (preferred) -- a real MetaWorld
+                 rollout of the fixed holding controller, scored by the frozen
+                 oracle as strictly better than the recorded continuation by
+                 more than the generation threshold.
+        index 1: original suffix C_tau   (non-preferred) -- the recorded
+                 continuation from the same state s_tau.
 
-    Each training pair (from EstopBuffer) consists of:
-        index 0: halt prefix  (preferred) — steps 0..τ real, τ+1..T-1 repeat (s_τ,a_τ,r_τ)
-        index 1: full trajectory  (non-preferred)
+    Both arms are stored ZERO-padded to T with a shared real length
+    batch["horizon"] -- there is no repeat-padding fiction here, since both
+    suffixes are already equal-length real rollouts. Padding MUST be masked
+    out (spec Section 11): scoring uses score_segments's mask argument.
 
-    Both stored at full length T.  The loss scores both over all T steps —
-    the repeated tail contributes log π(a_τ|s_τ) for each repeated step
-    with its discount weight, no masking required.
+    Loss (ARIC E-stop, Section 11):
+        J_pi(sigma) = alpha * sum_{k=0}^{h-1} gamma^k log pi(a_k | s_k)   (h = horizon)
+        L = softplus(-beta' (J_pi(H) - J_pi(C)))   [== -log sigma(beta'(J_H - J_C))]
 
-    Loss (ARIC E-stop):
-        J_π(σ) = α Σ_{k=0}^{T-1} γ^k log π(a_k | s_k)   (both sides, all T steps)
-        L = -log σ(β' (J_π(prefix) − J_π(full)))
-
-    BC pretraining (bc_steps > 0):
-        Same logic as DemoCPL: uses bc_pool if bc_pool_path is given, otherwise
-        falls back to BC on all T steps of the prefix (including repeated tail).
-        After bc_steps: L = L_estop + bc_coeff * L_bc.
-
-    Args:
-        alpha              : log-prob scaling α (default 1.0)
-        discount           : discount factor γ for the advantage sum (default 1.0)
-        beta_prime         : logit scaling β' in the loss (default 1.0)
-        bc_steps           : BC warmup steps (default 0)
-        bc_coeff           : BC regularisation weight after warmup (default 0.0)
-        bc_pool_path       : path to bc_pool.npz for shared BC warmup (default None)
-        bc_pool_batch_size : batch size for BC pool loader (default 64)
+    Args: alpha, discount, beta_prime, bc_steps, bc_coeff, bc_pool_path,
+    bc_pool_batch_size (BC pretraining logic is inherited from
+    DemoCPL.setup_datasets unchanged).
     """
 
     def __init__(
@@ -501,53 +498,58 @@ class EstopCPL(DemoCPL):
             **kwargs,
         )
         assert 0.0 < discount <= 1.0, "discount must be in (0, 1]"
-        self.discount    = discount
-        self.beta_prime  = beta_prime
+        self.discount = discount
+        self.beta_prime = beta_prime
 
-    def _get_estop_loss(self, batch):
+    def _policy_scorer(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """(N, T, obs_dim) x (N, T, act_dim) -> (N, T) alpha * log pi(a|s), for score_segments."""
+        obs_enc = self.network.encoder(obs)
+        dist = self.network.actor(obs_enc)
+        if isinstance(dist, torch.distributions.Distribution):
+            lp = dist.log_prob(action)
+        else:
+            assert dist.shape == action.shape
+            lp = -torch.square(dist - action).sum(dim=-1)
+        return self.alpha * lp
+
+    def _horizon_mask(self, horizon: torch.Tensor, T: int) -> torch.Tensor:
+        """(B,) real lengths -> (B, 1, T) mask, broadcasting across the K=2 arms
+        (both arms of a pair always share the same real length -- see EstopHoldBuffer)."""
+        time = torch.arange(T, device=horizon.device)
+        mask = (time.unsqueeze(0) < horizon.unsqueeze(1)).to(dtype=torch.float32)  # (B, T)
+        return mask.unsqueeze(1)  # (B, 1, T)
+
+    def _get_estop_hold_loss(self, batch):
         """
-        Compute the E-stop loss from an EstopBuffer batch.
+        Compute the E-stop-hold loss from an EstopHoldBuffer batch.
 
-        batch["obs"]    : (B, 2, T, obs_dim)
-            [0] = halt prefix — steps 0..τ are real, steps τ+1..T-1 repeat (s_τ,a_τ,r_τ)
-            [1] = full trajectory
-        batch["action"] : (B, 2, T, act_dim)
-
-        Both sides are scored over all T steps.  The repeated (s_τ,a_τ) tail
-        contributes log π(a_τ|s_τ) for each repeated step — no masking needed.
-
-        Loss: -log σ(β' (J_prefix − J_full))
-            J = α Σ_{k=0}^{T-1} γ^k log π(a_k | s_k)   (full T-step sum, both sides)
+        batch["obs"]/["action"]: (B, 2, T, ...), zero-padded beyond batch["horizon"].
+        Discounting starts at k=0 for each suffix (spec: "discount from the
+        suffix start"); padded steps are masked to zero and excluded from the
+        sum (not averaged away) via score_segments' mask argument.
         """
         B, _, T, _ = batch["obs"].shape
+        mask = self._horizon_mask(batch["horizon"], T)
 
-        obs    = batch["obs"].reshape(B * 2, T, -1)     # (B*2, T, obs_dim)
-        action = batch["action"].reshape(B * 2, T, -1)  # (B*2, T, act_dim)
+        seg_score = score_segments(
+            batch["obs"], batch["action"], self._policy_scorer,
+            discount=self.discount, mask=mask,
+        )  # (B, 2): [:, 0] = J_pi(H_tau), [:, 1] = J_pi(C_tau)
 
-        obs_enc = self.network.encoder(obs)
-        dist    = self.network.actor(obs_enc)
-
-        if isinstance(dist, torch.distributions.Distribution):
-            lp = dist.log_prob(action)                   # (B*2, T)
-        else:
-            lp = -torch.square(dist - action).sum(dim=-1)
-
-        lp = lp.reshape(B, 2, T)                        # (B, 2, T)
-        lp_prefix = lp[:, 0]                             # (B, T)
-        lp_full   = lp[:, 1]                             # (B, T)
-
-        # Discount weights: [1, γ, γ², ..., γ^{T-1}]
-        discounts = self.discount ** torch.arange(T, device=lp.device).float()  # (T,)
-
-        # J over all T steps — repeated (s_τ,a_τ) tail sums naturally
-        J_prefix = self.alpha * (discounts * lp_prefix).sum(dim=-1)  # (B,)
-        J_full   = self.alpha * (discounts * lp_full).sum(dim=-1)    # (B,)
-
-        logit      = self.beta_prime * (J_prefix - J_full)
+        logit = self.beta_prime * (seg_score[:, 0] - seg_score[:, 1])
         estop_loss = F.softplus(-logit).mean()
 
-        # BC: imitate the full padded prefix (all T steps)
-        bc_loss = -lp_prefix.mean()
+        # BC: imitate the hold suffix's real (unmasked) steps only.
+        obs_hold = batch["obs"][:, 0]
+        act_hold = batch["action"][:, 0]
+        obs_enc = self.network.encoder(obs_hold)
+        dist = self.network.actor(obs_enc)
+        if isinstance(dist, torch.distributions.Distribution):
+            lp = dist.log_prob(act_hold)
+        else:
+            lp = -torch.square(dist - act_hold).sum(dim=-1)
+        bc_mask = mask.squeeze(1)  # (B, T)
+        bc_loss = -(lp * bc_mask).sum() / bc_mask.sum().clamp(min=1.0)
 
         with torch.no_grad():
             accuracy = (logit > 0).float().mean()
@@ -557,24 +559,22 @@ class EstopCPL(DemoCPL):
     def train_step(self, batch: Dict, step: int, total_steps: int) -> Dict:
         if step < self.bc_steps:
             if self._bc_loader is not None:
-                # Draw from the shared BC pool (flat segments, no pair axis)
                 bc_batch = self._next_bc_batch()
                 bc_batch = self.format_batch(bc_batch)
-                obs_enc  = self.network.encoder(bc_batch["obs"])
-                dist     = self.network.actor(obs_enc)
+                obs_enc = self.network.encoder(bc_batch["obs"])
+                dist = self.network.actor(obs_enc)
                 if isinstance(dist, torch.distributions.Distribution):
                     lp = dist.log_prob(bc_batch["action"])
                 else:
                     lp = -torch.square(dist - bc_batch["action"]).sum(dim=-1)
                 bc_loss = -lp.mean()
             else:
-                # Fallback: BC on real steps of the halt prefix
-                _, bc_loss, _ = self._get_estop_loss(batch)
-            loss       = bc_loss
+                _, bc_loss, _ = self._get_estop_hold_loss(batch)
+            loss = bc_loss
             estop_loss = torch.tensor(0.0)
-            accuracy   = torch.tensor(0.0)
+            accuracy = torch.tensor(0.0)
         else:
-            estop_loss, bc_loss, accuracy = self._get_estop_loss(batch)
+            estop_loss, bc_loss, accuracy = self._get_estop_hold_loss(batch)
             loss = estop_loss + self.bc_coeff * bc_loss
 
         self.optim["actor"].zero_grad()
@@ -582,7 +582,6 @@ class EstopCPL(DemoCPL):
         self.optim["actor"].step()
 
         if step == self.bc_steps - 1:
-            # Reset optimizer and start LR schedule after BC phase
             del self.optim["actor"]
             params = itertools.chain(
                 self.network.actor.parameters(),
@@ -600,7 +599,7 @@ class EstopCPL(DemoCPL):
 
     def validation_step(self, batch: Any) -> Dict:
         with torch.no_grad():
-            estop_loss, bc_loss, accuracy = self._get_estop_loss(batch)
+            estop_loss, bc_loss, accuracy = self._get_estop_hold_loss(batch)
         return dict(
             estop_loss=estop_loss.item(),
             bc_loss=bc_loss.item(),

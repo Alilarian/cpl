@@ -1,7 +1,7 @@
 """
 Reward-model baseline for the CPL feedback-type comparison ("Stage-3 scorer swap").
 
-Everywhere ARIC (CPL/DemoCPL/CreditAssignmentCPL/EstopCPL, see cpl.py) computes a
+Everywhere ARIC (CPL/DemoCPL/CreditAssignmentCPL/EstopHoldCPL, see cpl.py) computes a
 per-arm score as alpha * sum_t log pi(a_t | s_t) and feeds it into a K-way
 contrastive loss, these classes compute the same per-arm score as
 sum_t gamma**t * r_theta(s_t, a_t) instead, using the identical loss functions
@@ -48,8 +48,8 @@ class RewardCPLBase(Algorithm):
         # network.reward returns (E, N, T); collapse the ensemble dim like piql.py does.
         return self.network.reward(obs, act).mean(dim=0)
 
-    def _score_segments(self, seg_obs: torch.Tensor, seg_act: torch.Tensor) -> torch.Tensor:
-        return score_segments(seg_obs, seg_act, self._scorer, discount=self.discount)
+    def _score_segments(self, seg_obs: torch.Tensor, seg_act: torch.Tensor, mask=None) -> torch.Tensor:
+        return score_segments(seg_obs, seg_act, self._scorer, discount=self.discount, mask=mask)
 
     def _l2(self, seg_obs: torch.Tensor, seg_act: torch.Tensor) -> torch.Tensor:
         # Mean squared PER-STEP reward (not the summed segment score, so it doesn't scale with T).
@@ -181,18 +181,18 @@ class RewardCreditCPL(RewardCPLBase):
         return metrics
 
 
-class RewardEstopCPL(RewardCPLBase):
+class RewardEstopHoldCPL(RewardCPLBase):
     """
-    Reward-baseline analogue of EstopCPL. Batches from EstopBuffer:
-    obs/action (B, 2, T, ...) -- index 0 = halt prefix (padded tail repeats the
-    last (s_tau, a_tau)), index 1 = full trajectory. Both sides are length T and
-    scored unmasked -- an additive shift in r_theta cancels in the logit
-    difference exactly as it does for EstopCPL's alpha * log pi.
+    Reward-baseline analogue of EstopHoldCPL. Batches from EstopHoldBuffer:
+    obs/action (B, 2, T, ...) -- index 0 = hold suffix H_tau (preferred), index
+    1 = original suffix C_tau, both ZERO-padded to T with a shared real length
+    batch["horizon"]. The padding must be masked out -- an additive shift in
+    r_theta over only the REAL steps still cancels in the logit difference,
+    which is all that's required for the shift-invariance argument to carry
+    over.
 
-    contrastive_bias is meaningless here (forced to 1.0, matching EstopCPL);
-    beta_prime plays that role. discount is a real hyperparameter (unlike
-    RewardCPL/RewardCreditCPL where it must stay 1.0) -- match EstopCPL's config
-    value exactly so the comparison stays discount-matched.
+    contrastive_bias is meaningless here (forced to 1.0); beta_prime plays
+    that role.
     """
 
     def __init__(self, *args, beta_prime: float = 1.0, **kwargs):
@@ -201,7 +201,13 @@ class RewardEstopCPL(RewardCPLBase):
 
     def _get_reward_loss(self, batch: Dict[str, Any]):
         seg_obs, seg_act = batch["obs"], batch["action"]
-        seg_score = self._score_segments(seg_obs, seg_act)  # (B, 2)
+        B, _, T, _ = seg_obs.shape
+
+        time = torch.arange(T, device=seg_obs.device)
+        mask = (time.unsqueeze(0) < batch["horizon"].unsqueeze(1)).to(dtype=seg_obs.dtype)  # (B, T)
+        mask = mask.unsqueeze(1)  # (B, 1, T), broadcasts across the K=2 arms
+
+        seg_score = self._score_segments(seg_obs, seg_act, mask=mask)  # (B, 2)
         logit = self.beta_prime * (seg_score[:, 0] - seg_score[:, 1])
         loss = F.softplus(-logit).mean()
         loss = loss + self.l2_coeff * self._l2(seg_obs, seg_act)

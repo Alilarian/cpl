@@ -1,11 +1,12 @@
 
-alg: DemoPIQL
+alg: EstopHoldPIQL
 alg_kwargs:
   beta: 0.3333
   expectile: 0.7
   reward_steps: 50000
-  contrastive_bias: 1.0     # unbiased -- see research/algs/piql.py::DemoPIQL docstring
-  transition_discount: 0.99 # DemoBuffer carries no discount field, unlike FeedbackBuffer's discount_1/discount_2
+  reward_discount: 0.99     # matches estop_hold_cpl.yaml's EstopHoldCPL discount -- keep discount-matched
+  beta_prime: 1.0           # matches estop_hold_cpl.yaml; plays the role contrastive_bias would
+  transition_discount: 0.99 # IQL's Bellman-target discount -- a distinct concept from reward_discount above
 
 optim: Adam
 optim_kwargs:
@@ -34,18 +35,19 @@ checkpoint: null
 
 eval_env: mw_drawer-open-v2
 
-# seq_estop_labels.npz: stop_seg/cont_seg pairs, both length h (K=2, CorrBuffer format).
-# Reward net and IQL train jointly in one run, exactly like the original pairwise
-# PIQL -- reward_steps gates the reward net's own gradient step, then it's frozen
-# in-place (no separate Phase-1 job) for the rest of total_steps.
-dataset: CorrBuffer
+# estop_hold_labels.npz: (M, 2, T, ...), ZERO-padded beyond a shared per-pair
+# `horizon`. Index 0 = hold suffix (preferred), index 1 = original suffix.
+# EstopHoldPIQL repeat-pads the tail internally (matching EstopPIQL's
+# convention) before feeding it to the shared value/critic/actor machinery --
+# see research/algs/piql.py::EstopHoldPIQL for why zero-padding can't be fed
+# through unmasked. Reward net and IQL train jointly in one run, exactly like
+# the original pairwise PIQL.
+dataset: EstopHoldBuffer
 dataset_kwargs:
-  path: datasets/mw/seq_estop_labels/mw_drawer-open-v2/seq_estop_labels.npz
+  path: datasets/mw/estop_hold_labels/mw_drawer-open-v2/estop_hold_labels.npz
   batch_size: 96
-  segment_length: null
   reward_scale: 1.0
   reward_shift: 0.0
-  capacity: null
 
 schedule:
   actor: ["import", "torch.optim.lr_scheduler", "CosineAnnealingLR"]

@@ -1,8 +1,8 @@
 
-alg: RewardEstopCPL
+alg: RewardEstopHoldCPL
 alg_kwargs:
-  discount: 0.99         # matches estop_cpl.yaml's EstopCPL discount -- keep discount-matched
-  beta_prime: 1.0        # matches estop_cpl.yaml's beta_prime; plays the role contrastive_bias would
+  discount: 0.99         # matches estop_hold_cpl.yaml's EstopHoldCPL discount -- keep discount-matched
+  beta_prime: 1.0        # matches estop_hold_cpl.yaml's beta_prime; plays the role contrastive_bias would
   l2_coeff: 0.0
 
 optim: Adam
@@ -14,7 +14,7 @@ network_kwargs:
   reward_class: ContinuousMLPCritic
   reward_kwargs:
     ensemble_size: 1
-  dropout: 0.25   # matches the actor's dropout in estop_cpl.yaml
+  dropout: 0.25   # matches the actor's dropout in estop_hold_cpl.yaml
   act: ["import", "torch.nn", "ReLU"]
   hidden_layers: [512, 512]
   ortho_init: True
@@ -26,14 +26,14 @@ checkpoint: null
 # observation/action spaces. eval_fn: null below skips the (nonexistent) rollout.
 eval_env: mw_drawer-open-v2
 
-# estop_labels.npz: (M, 2, T, ...) with stop_time (M,). Index 0 = halt prefix
-# (padded tail repeats the last (s_tau, a_tau)), index 1 = full trajectory. Both
-# sides are scored unmasked over all T steps by RewardEstopCPL, exactly as
-# EstopCPL scores them -- an additive shift in r_theta cancels in the logit
-# difference because both sides are length T.
-dataset: EstopBuffer
+# estop_hold_labels.npz: (M, 2, T, ...), ZERO-padded beyond a shared per-pair
+# `horizon`. Index 0 = hold suffix H_tau (preferred), index 1 = original
+# suffix C_tau. Both sides are masked by `horizon` before scoring --
+# RewardEstopHoldCPL, unlike RewardEstopCPL, cannot score the padded tail
+# unmasked since it carries no physical meaning (zero-padding, not a repeat).
+dataset: EstopHoldBuffer
 dataset_kwargs:
-  path: datasets/mw/estop_labels/mw_drawer-open-v2/estop_labels.npz
+  path: datasets/mw/estop_hold_labels/mw_drawer-open-v2/estop_hold_labels.npz
   batch_size: 96
   reward_scale: 1.0
   reward_shift: 0.0

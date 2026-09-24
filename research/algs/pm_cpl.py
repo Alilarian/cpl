@@ -9,8 +9,7 @@ from a precomputed VI table.
 Classes
 -------
 PointMassCPL      — pref feedback   (extends CPL)
-PointMassDemoCPL  — corr / demo / seq_estop feedback  (extends DemoCPL)
-PointMassEstopCPL — estop feedback  (extends EstopCPL)
+PointMassDemoCPL  — corr / demo feedback  (extends DemoCPL)
 
 Extra alg_kwargs (all classes)
 -------------------------------
@@ -29,7 +28,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from .cpl import CPL, CreditAssignmentCPL, DemoCPL, EstopCPL
+from .cpl import CPL, CreditAssignmentCPL, DemoCPL
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +196,7 @@ class PointMassCPL(_PointMassVizMixin, CPL):
 
 
 class PointMassDemoCPL(_PointMassVizMixin, DemoCPL):
-    """CPL for corr / demo / seq_estop feedback on PointMass. Dataset: CorrBuffer or DemoBuffer."""
-
-
-class PointMassEstopCPL(_PointMassVizMixin, EstopCPL):
-    """CPL for non-sequential e-stop feedback on PointMass. Dataset: EstopBuffer."""
+    """CPL for corr / demo feedback on PointMass. Dataset: CorrBuffer or DemoBuffer."""
 
 
 class PointMassCreditAssignmentCPL(_PointMassVizMixin, CreditAssignmentCPL):

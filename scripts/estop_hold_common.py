@@ -54,7 +54,11 @@ from research.utils.config import Config
 # ---------------------------------------------------------------------------
 
 def save_npz(path, **arrays):
-    """Atomically save a compressed npz (write to .tmp, then rename)."""
+    """Atomically save a compressed npz (write to .tmp, then rename). Creates
+    the parent directory if it doesn't exist yet."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
     with io.BytesIO() as buf:
         np.savez_compressed(buf, **arrays)

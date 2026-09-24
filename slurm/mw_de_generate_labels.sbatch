@@ -39,7 +39,7 @@
 # Resource overrides (command-line flags override #SBATCH defaults below):
 #   --time=HH:MM:SS     default: 48:00:00
 #   --cpus-per-task=N   default: 8
-#   --mem=XG            default: 128G  (sized for credit_assignment; safe for all)
+#   --mem=XG            default: 64G
 #
 # Optional env overrides:
 #   ENV_NAME          default: mw_drawer-open-v2
@@ -53,7 +53,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 #SBATCH --time=48:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err

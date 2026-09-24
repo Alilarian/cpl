@@ -26,7 +26,7 @@
 # Resource overrides (command-line flags override #SBATCH defaults below):
 #   --time=HH:MM:SS     default: 12:00:00  (per shard; scale with pool size / NUM_SHARDS)
 #   --cpus-per-task=N   default: 8
-#   --mem=XG            default: 32G
+#   --mem=XG            default: 64G
 #
 # Optional env overrides:
 #   FEEDBACK_TYPE       required: corr | demo
@@ -61,7 +61,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH --output=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.out
 #SBATCH --error=/uufs/chpc.utah.edu/common/home/u1472210/cpl/slurm/logs/%x_%A_%a.err

@@ -23,7 +23,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=64G
 #SBATCH --time=00:45:00
 #SBATCH --partition=soc-gpu-class-grn
 #SBATCH --qos=soc-gpu-students-grn

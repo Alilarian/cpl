@@ -1,0 +1,29 @@
+import: configs/mw_state_dense/mixed_cpl.yaml
+eval_env: mw_door-open-v2
+seed: 1
+alg_kwargs:
+  contrastive_bias: 0.75
+  component_weights:
+    scalar: 1.0
+    corr: 0.1
+dataset_kwargs:
+  batch_size: 96
+  components:
+  - name: scalar
+    dataset_class: CorrBuffer
+    weight: 0.9
+    dataset_kwargs:
+      path: /scratch/general/vast/u1472210/mw_de_labels/mw_door-open-v2/scalar_labels.npz
+      capacity: null
+      subsample_n: 9000
+      subsample_seed: 0
+  - name: corr
+    dataset_class: CorrBuffer
+    weight: 0.1
+    dataset_kwargs:
+      path: /scratch/general/vast/u1472210/mw_de_labels/mw_door-open-v2/corr_labels.npz
+      capacity: null
+      subsample_n: 1000
+      subsample_seed: 0
+trainer_kwargs:
+  total_steps: 250000

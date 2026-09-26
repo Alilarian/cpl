@@ -54,6 +54,50 @@ def biased_bce_with_scores(adv, scores, bias=1.0):
     return loss, accuracy
 
 
+def biased_choice_cross_entropy(adv, chosen, bias=1.0):
+    """
+    Generalized K-way biased cross-entropy for "choice set" feedback: adv holds
+    segment advantages for K candidates, one of which (`chosen`, possibly
+    different per row) is the ground-truth preferred/expert candidate. Every
+    other candidate's logit is downweighted by `bias` before the softmax,
+    making it harder for them to compete with the chosen one.
+
+        logit_k = adv_k             for k == chosen[i]   (unbiased)
+        logit_k = bias * adv_k      for k != chosen[i]   (downweighted)
+        L       = cross_entropy(logit, chosen)
+
+    bias=1.0 recovers standard (unbiased) cross-entropy.
+
+    This is the shared formula behind every feedback type in this codebase:
+    demo/pref/corr/scalar always set chosen=0 (see `demo_cross_entropy` below,
+    a thin wrapper over this function); credit assignment sets a variable
+    per-row chosen index (see CreditAssignmentCPL._get_ca_loss, which predates
+    this generalization and implements the identical math inline). MixedCPL
+    calls this function directly so any feedback-type combination can be
+    scored with one shared loss, regardless of which types are being mixed.
+
+    Args:
+        adv    : (B, K)  segment advantages
+        chosen : (B,)    long, index of the preferred candidate per row
+        bias   : float   downweight for non-chosen logits (default 1.0)
+
+    Returns:
+        loss     : scalar
+        accuracy : fraction of rows where the chosen candidate has the
+                   highest (unbiased) advantage
+    """
+    B = adv.shape[0]
+    bias_weights = torch.full_like(adv, bias)
+    bias_weights[torch.arange(B, device=adv.device), chosen] = 1.0
+    logits = bias_weights * adv
+    loss = F.cross_entropy(logits, chosen)
+
+    with torch.no_grad():
+        accuracy = (adv.argmax(dim=1) == chosen).float().mean()
+
+    return loss, accuracy
+
+
 def demo_cross_entropy(adv, bias=0.5):
     """
     K-way cross-entropy loss for demonstrative feedback (ARIC formulation).
@@ -73,6 +117,11 @@ def demo_cross_entropy(adv, bias=0.5):
 
     With K=2 and bias<1 this exactly recovers biased_bce_with_logits.
 
+    Thin wrapper over `biased_choice_cross_entropy` with chosen≡0 for every
+    row — kept as its own function (rather than inlining the wrapper at every
+    call site) since it's imported directly by RewardCPL and by
+    tests/test_reward_cpl_k2.py.
+
     Args:
         adv  : (B, K)  segment advantages, index 0 = demonstration
         bias : float   downweight for counterfactual logits (default 0.5)
@@ -81,19 +130,8 @@ def demo_cross_entropy(adv, bias=0.5):
         loss     : scalar
         accuracy : fraction of batches where demo has highest advantage
     """
-    # Apply bias to counterfactuals only
-    bias_weights        = adv.new_ones(adv.shape)
-    bias_weights[:, 1:] = bias
-    logits = bias_weights * adv                          # (B, K)
-
-    # Numerically stable log-softmax at index 0
-    log_softmax = logits[:, 0] - torch.logsumexp(logits, dim=1)
-    loss = -log_softmax.mean()
-
-    with torch.no_grad():
-        accuracy = (adv[:, 0] == adv.max(dim=1).values).float().mean()
-
-    return loss, accuracy
+    chosen = torch.zeros(adv.shape[0], dtype=torch.long, device=adv.device)
+    return biased_choice_cross_entropy(adv, chosen, bias=bias)
 
 
 class CPL(OffPolicyAlgorithm):
@@ -132,6 +170,22 @@ class CPL(OffPolicyAlgorithm):
         else:
             self.schedulers = {}
             super().setup_schedulers()
+
+    def _log_prob(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """encoder -> actor -> log pi(a|s), for a flat (N, T, ...) batch.
+
+        Factored out of _get_cpl_loss/DemoCPL._get_demo_loss/
+        CreditAssignmentCPL._get_ca_loss (which each inline this same
+        three-line block) so MixedCPL can reuse it once per feedback-type
+        component instead of duplicating it a fourth time.
+        """
+        obs = self.network.encoder(obs)
+        dist = self.network.actor(obs)
+        if isinstance(dist, torch.distributions.Distribution):
+            return dist.log_prob(action)
+        assert dist.shape == action.shape
+        # For independent gaussian with unit var, logprob reduces to MSE.
+        return -torch.square(dist - action).sum(dim=-1)
 
     def _get_cpl_loss(self, batch):
         if isinstance(batch, dict) and "label" in batch:

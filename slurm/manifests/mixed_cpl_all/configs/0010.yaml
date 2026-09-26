@@ -21,7 +21,7 @@ dataset_kwargs:
     dataset_class: DemoBuffer
     weight: 0.1
     dataset_kwargs:
-      path: /scratch/general/vast/u1472210/demo_labels/mw_plate-slide-v2/demo_labels_K7.npz
+      path: /scratch/general/vast/u1472210/demo_labels/mw_plate-slide-v2/demo_labels_K9.npz
       capacity: null
       subsample_n: 1000
       subsample_seed: 0

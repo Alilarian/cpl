@@ -24,7 +24,7 @@ mixed run's "9000 credit rows" a strict prefix-subset of the exact 10000 rows
 the corresponding mw_b10k/<env>/credit_assignment/cpl_s<seed> baseline
 already trained on (and likewise for pref/corr/scalar's "1000 rows"). demo
 has no such 10k baseline in mw_b10k (it was excluded from that matrix), but
-its raw demo_labels_K7.npz file still exists and subsample_n=1000 draws
+its raw demo_labels_K9.npz file still exists and subsample_n=1000 draws
 reproducibly from it the same way.
 
 NOTE: LABELS_DIR / DEMO_LABELS_DIR below are reconstructed from the *already
@@ -60,6 +60,9 @@ TOTAL_STEPS = 250000  # matches the static per-type yaml files under
 
 LABELS_DIR = "/scratch/general/vast/u1472210/mw_de_labels"  # credit/scalar/pref/corr
 DEMO_LABELS_DIR = "/scratch/general/vast/u1472210/demo_labels"  # demo lives separately
+DEMO_LABELS_FILENAME = "demo_labels_K9.npz"  # K9, not K7 -- confirmed against the
+# actual CHPC scratch directory (demo_cpl_all's older manifest predates a
+# K7->K9 regeneration and is stale on this point).
 
 DATASET_CLASS = {
     "credit_assignment": "PMCreditAssignmentBuffer",
@@ -82,7 +85,7 @@ LABEL_FILENAME = {
 
 def label_path(feedback_type: str, env: str) -> str:
     if feedback_type == "demo":
-        return f"{DEMO_LABELS_DIR}/{env}/demo_labels_K7.npz"
+        return f"{DEMO_LABELS_DIR}/{env}/{DEMO_LABELS_FILENAME}"
     return f"{LABELS_DIR}/{env}/{LABEL_FILENAME[feedback_type]}"
 
 

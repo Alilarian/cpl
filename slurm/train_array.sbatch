@@ -56,9 +56,25 @@ if [[ -z "$TASK_LINE" ]]; then
     exit 1
 fi
 
-IFS=$'\t' read -r CONFIG_PATH RUN_PATH <<< "$TASK_LINE"
+IFS=$'\t' read -r CONFIG_PATH RUN_PATH_RAW <<< "$TASK_LINE"
 CONFIG_PATH="$(resolve_path "$CONFIG_PATH" "$REPO_ROOT")"
-RUN_PATH="$(resolve_path "$RUN_PATH" "$REPO_ROOT")"
+RUN_PATH="$(resolve_path "$RUN_PATH_RAW" "$REPO_ROOT")"
+
+# Default WandB run name/group from the manifest's own RUN_PATH -- e.g.
+# "runs/mw_b10k_mixed/mw_drawer-open-v2/credit_assignment+demo_10pct/cpl_s0"
+# becomes name "mw_b10k_mixed/mw_drawer-open-v2/credit_assignment+demo_10pct/cpl_s0",
+# group "mw_b10k_mixed/mw_drawer-open-v2/credit_assignment+demo_10pct" (groups
+# the 3 seeds of one combo together in the WandB UI). RUN_PATH already
+# uniquely identifies every task in a manifest, so this is unique and
+# descriptive by construction -- without it every task falls back to
+# WANDB_RUN_NAME=os.path.basename(RUN_PATH) (train.py), which collides across
+# every task that happens to share a basename like "cpl_s0". Only fills in
+# when the caller hasn't already exported these, so submissions that set
+# WANDB_RUN_NAME/WANDB_GROUP/WANDB_PROJECT themselves are unaffected.
+WANDB_NAME_DEFAULT="${RUN_PATH_RAW#runs/}"
+: "${WANDB_RUN_NAME:=$WANDB_NAME_DEFAULT}"
+: "${WANDB_GROUP:=$(dirname "$WANDB_NAME_DEFAULT")}"
+export WANDB_RUN_NAME WANDB_GROUP
 
 echo "SLURM_JOBID=${SLURM_JOB_ID:-}"
 echo "SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
@@ -67,6 +83,9 @@ echo "REPO_ROOT=${REPO_ROOT}"
 echo "MANIFEST_PATH=${MANIFEST_PATH}"
 echo "CONFIG_PATH=${CONFIG_PATH}"
 echo "RUN_PATH=${RUN_PATH}"
+echo "WANDB_PROJECT=${WANDB_PROJECT:-<default: repo dir name>}"
+echo "WANDB_GROUP=${WANDB_GROUP}"
+echo "WANDB_RUN_NAME=${WANDB_RUN_NAME}"
 
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$(dirname "$RUN_PATH")"

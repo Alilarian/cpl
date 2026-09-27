@@ -27,11 +27,16 @@ has no such 10k baseline in mw_b10k (it was excluded from that matrix), but
 its raw demo_labels_K9.npz file still exists and subsample_n=1000 draws
 reproducibly from it the same way.
 
-NOTE: LABELS_DIR / DEMO_LABELS_DIR below are reconstructed from the *already
-completed* mw_b10k runs' saved config.yaml files in this repo checkout
-(runs/mw_b10k/mw_drawer-open-v2/<type>/cpl_s0/config.yaml). They should still
-be correct, but are kept as top-of-file constants specifically so a path fix
-on CHPC doesn't require touching the mixing logic below.
+NOTE: LABELS_DIR / LABEL_FILENAME below are cross-checked against two
+independent sources: the already-completed mw_b10k runs' saved config.yaml
+files in this repo checkout (runs/mw_b10k/mw_drawer-open-v2/<type>/cpl_s0/
+config.yaml) for credit_assignment/scalar/pref/corr, and
+slurm/mw_de_train_demo_piql.sbatch for demo (which explicitly documents
+demo_labels_K9.npz living under this same LABELS_DIR, not a separate
+top-level demo_labels/ directory as the older, stale demo_cpl_all manifest
+implied -- that mismatch was the root cause of an earlier FileNotFoundError
+on every *+demo run). Kept as top-of-file constants so a further path fix on
+CHPC doesn't require touching the mixing logic below.
 """
 
 import os
@@ -58,11 +63,12 @@ CONTRASTIVE_BIAS = 0.75
 TOTAL_STEPS = 250000  # matches the static per-type yaml files under
 # configs/mw_state_dense/ (the real mw_b10k baselines used 500000 instead).
 
-LABELS_DIR = "/scratch/general/vast/u1472210/mw_de_labels"  # credit/scalar/pref/corr
-DEMO_LABELS_DIR = "/scratch/general/vast/u1472210/demo_labels"  # demo lives separately
-DEMO_LABELS_FILENAME = "demo_labels_K9.npz"  # K9, not K7 -- confirmed against the
-# actual CHPC scratch directory (demo_cpl_all's older manifest predates a
-# K7->K9 regeneration and is stale on this point).
+# All 5 feedback types' label files live under this ONE directory, per-env
+# subfolder -- confirmed against slurm/mw_de_train_demo_piql.sbatch (which
+# documents demo_labels_K9.npz living here too, NOT under a separate
+# top-level demo_labels/ dir as the older, stale demo_cpl_all manifest
+# implied -- that was the root cause of the earlier FileNotFoundError).
+LABELS_DIR = "/scratch/general/vast/u1472210/mw_de_labels"
 
 DATASET_CLASS = {
     "credit_assignment": "PMCreditAssignmentBuffer",
@@ -73,19 +79,19 @@ DATASET_CLASS = {
 }
 
 # Label filenames under LABELS_DIR/<env>/ -- NOT simply "<type>_labels.npz"
-# for credit_assignment (it's "credit_labels.npz"). Confirmed against the
-# already-completed mw_b10k runs' saved config.yaml files.
+# for credit_assignment ("credit_labels.npz") or demo ("demo_labels_K9.npz",
+# confirmed present for button-press/door-open/drawer-open/plate-slide per
+# mw_de_train_demo_piql.sbatch -- K9, not K7).
 LABEL_FILENAME = {
     "credit_assignment": "credit_labels.npz",
     "scalar": "scalar_labels.npz",
     "pref": "pref_labels.npz",
     "corr": "corr_labels.npz",
+    "demo": "demo_labels_K9.npz",
 }
 
 
 def label_path(feedback_type: str, env: str) -> str:
-    if feedback_type == "demo":
-        return f"{DEMO_LABELS_DIR}/{env}/{DEMO_LABELS_FILENAME}"
     return f"{LABELS_DIR}/{env}/{LABEL_FILENAME[feedback_type]}"
 
 

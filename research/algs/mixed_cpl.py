@@ -70,9 +70,14 @@ class MixedCPL(CPL):
         )
         self.component_weights = {} if component_weights is None else dict(component_weights)
 
-    def _get_component_loss(self, sub_batch: Dict):
+    def _get_component_loss(self, name: str, sub_batch: Dict):
         obs, action = sub_batch["obs"], sub_batch["action"]
         chosen = sub_batch["label"].long()
+        assert obs.dim() == 4 and action.dim() == 4, (
+            f"component '{name}': expected 4D (B, K, T, obs_dim) / (B, K, T, act_dim), "
+            f"got obs.shape={tuple(obs.shape)} action.shape={tuple(action.shape)} "
+            f"chosen.shape={tuple(chosen.shape)}"
+        )
         B, K, T, _ = obs.shape
 
         lp = self._log_prob(obs.reshape(B * K, T, -1), action.reshape(B * K, T, -1))
@@ -89,7 +94,7 @@ class MixedCPL(CPL):
         total_bc_loss = 0.0
         logs = {}
         for name, sub_batch in batch.items():
-            loss_i, bc_loss_i, accuracy_i = self._get_component_loss(sub_batch)
+            loss_i, bc_loss_i, accuracy_i = self._get_component_loss(name, sub_batch)
             weight = self.component_weights.get(name, 1.0)
             total_loss = total_loss + weight * loss_i
             total_bc_loss = total_bc_loss + weight * bc_loss_i

@@ -1,6 +1,18 @@
 #!/bin/bash
 # Usage:
 #   sbatch --array=1-N --time=24:00:00 slurm/train_array.sbatch /path/to/manifest.tsv
+#
+# GPU usage:
+#   DEVICE=cuda CONDA_ENV_NAME=cpl_gpu \
+#     sbatch --array=1-N --gres=gpu:1 --time=24:00:00 \
+#            slurm/train_array.sbatch /path/to/manifest.tsv
+#
+# Optional env overrides:
+#   DEVICE           default: auto (scripts/train.py's own default -- i.e.
+#                    omitting DEVICE reproduces this script's exact prior
+#                    behavior; set to "cuda" for GPU or "cpu" to force CPU)
+#   CONDA_ENV_NAME   default: cpl (set to your GPU-capable env, e.g. cpl_gpu,
+#                    when DEVICE=cuda -- see setup_shell.sh)
 
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -90,4 +102,30 @@ echo "WANDB_RUN_NAME=${WANDB_RUN_NAME}"
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$(dirname "$RUN_PATH")"
 
-python3 "${REPO_ROOT}/scripts/train.py" --config "$CONFIG_PATH" --path "$RUN_PATH"
+# "auto" reproduces this script's exact prior behavior (train.py's own
+# --device default) for every manifest family that doesn't set DEVICE --
+# only families that explicitly opt in with DEVICE=cuda/cpu see a change.
+DEVICE="${DEVICE:-auto}"
+echo "DEVICE=${DEVICE}"
+echo "CONDA_ENV_NAME=${CONDA_ENV_NAME:-cpl (default)}"
+
+# Fail fast and clearly if DEVICE=cuda was requested but the active conda env's
+# torch can't actually see a GPU -- otherwise this surfaces later as a
+# confusing "Torch not compiled with CUDA enabled" traceback deep inside model
+# construction, with no indication that CONDA_ENV_NAME is the likely cause.
+if [[ "$DEVICE" == "cuda" ]]; then
+    if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+        echo "ERROR: DEVICE=cuda requested, but torch.cuda.is_available() is False"
+        echo "in the active conda env (CONDA_ENV_NAME=${CONDA_ENV_NAME:-cpl (default)})."
+        echo "Did you forget to set CONDA_ENV_NAME=cpl_gpu (or your GPU-capable env)?"
+        exit 1
+    fi
+fi
+
+# Match PyTorch's CPU intra-op thread pool to what SLURM actually allocated --
+# without this, PyTorch's own default detection is trusted implicitly, which
+# risks oversubscription when multiple array tasks share one node.
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+
+python3 "${REPO_ROOT}/scripts/train.py" --config "$CONFIG_PATH" --path "$RUN_PATH" --device "$DEVICE"

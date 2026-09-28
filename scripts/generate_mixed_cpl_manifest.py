@@ -59,9 +59,13 @@ BASE_WEIGHT, SECONDARY_WEIGHT = 0.9, 0.1  # dataset/batch composition
 BASE_N, SECONDARY_N = 9000, 1000  # subsample_n per slot
 SUBSAMPLE_SEED = 0
 BATCH_SIZE = 96
+ALPHA = 0.1
 CONTRASTIVE_BIAS = 0.75
-TOTAL_STEPS = 250000  # matches the static per-type yaml files under
-# configs/mw_state_dense/ (the real mw_b10k baselines used 500000 instead).
+BC_STEPS, BC_COEFF = 0, 0.0
+# total_steps is NOT set here -- it lives solely in
+# configs/mw_state_dense/mixed_cpl.yaml's trainer_kwargs (currently 250000).
+# See build_config()'s docstring note for why per-run configs must never
+# override trainer_kwargs at all.
 
 # All 5 feedback types' label files live under this ONE directory, per-env
 # subfolder -- confirmed against slurm/mw_de_train_demo_piql.sbatch (which
@@ -110,12 +114,31 @@ def component(name: str, weight: float, subsample_n: int, env: str) -> dict:
 
 
 def build_config(base: str, secondary: str, env: str, seed: int) -> dict:
+    """
+    IMPORTANT: Config.load's `import` merge (research/utils/config.py's
+    BareConfig.update) is a SHALLOW dict.update() -- overriding a top-level
+    key here (e.g. "alg_kwargs") REPLACES that whole nested dict from the
+    imported mixed_cpl.yaml, it does not merge into it. Concretely: an
+    earlier version of this function only set alg_kwargs.contrastive_bias/
+    component_weights, which silently dropped alg_kwargs.alpha (falling back
+    to CPL's own default alpha=1.0 instead of the intended 0.1) -- and a
+    trainer_kwargs override that only set total_steps silently dropped
+    train_dataloader_kwargs, which re-enabled PyTorch's default batch_size=1
+    auto-collation and caused every batch to arrive with a spurious extra
+    leading axis (observed as "expected 4D ... got (1, 86, 45, 20, 35)").
+    The fix: never override trainer_kwargs at all here (total_steps lives
+    solely in mixed_cpl.yaml), and always restate every alg_kwargs field
+    explicitly rather than only the ones that vary per run.
+    """
     return {
         "import": "configs/mw_state_dense/mixed_cpl.yaml",
         "eval_env": env,
         "seed": seed,
         "alg_kwargs": {
+            "alpha": ALPHA,
             "contrastive_bias": CONTRASTIVE_BIAS,
+            "bc_steps": BC_STEPS,
+            "bc_coeff": BC_COEFF,
             "component_weights": {base: 1.0, secondary: SECONDARY_WEIGHT},
         },
         "dataset_kwargs": {
@@ -124,9 +147,6 @@ def build_config(base: str, secondary: str, env: str, seed: int) -> dict:
                 component(base, BASE_WEIGHT, BASE_N, env),
                 component(secondary, SECONDARY_WEIGHT, SECONDARY_N, env),
             ],
-        },
-        "trainer_kwargs": {
-            "total_steps": TOTAL_STEPS,
         },
     }
 

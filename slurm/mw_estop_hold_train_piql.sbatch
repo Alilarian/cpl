@@ -41,6 +41,7 @@
 #   CONDA_ENV_NAME     default: cpl (set to your GPU-capable env, e.g. cpl_gpu,
 #                                     when DEVICE=cuda)
 
+#SBATCH --job-name=mw_estop_hold_train_piql
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

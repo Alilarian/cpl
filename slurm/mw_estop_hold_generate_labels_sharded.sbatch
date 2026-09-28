@@ -48,6 +48,7 @@
 #   N_WORKERS           default: $SLURM_CPUS_PER_TASK (intra-shard multiprocessing)
 #   MAX_SEGMENTS        default: unset (debug/testing cap, applied per shard)
 
+#SBATCH --job-name=mw_estop_hold_generate_labels
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

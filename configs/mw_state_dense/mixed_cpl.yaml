@@ -41,7 +41,14 @@ schedule_kwargs:
     multiplier: 1.0
 
 trainer_kwargs:
-  total_steps: 500000
+  # total_steps here (not overridden per-run) is the source of truth for the
+  # mixed_cpl_all manifest -- see scripts/generate_mixed_cpl_manifest.py's
+  # module docstring for why per-run configs never touch trainer_kwargs:
+  # Config.load's `import` merge is shallow (BareConfig.update is a plain
+  # dict.update()), so overriding any key here per-run would silently
+  # replace this WHOLE dict, dropping train_dataloader_kwargs below and
+  # re-enabling PyTorch's default batch_size=1 auto-collation.
+  total_steps: 250000
   log_freq: 500
   profile_freq: 500
   eval_freq: 5000

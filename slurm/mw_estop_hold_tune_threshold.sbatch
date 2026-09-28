@@ -31,6 +31,7 @@
 #   CONDA_ENV_NAME     default: cpl (set to your GPU-capable env if needed,
 #                                     e.g. cpl_gpu -- this job itself is CPU-only)
 
+#SBATCH --job-name=mw_estop_hold_tune_threshold
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8

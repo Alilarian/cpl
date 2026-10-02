@@ -113,6 +113,12 @@ def main():
                              "times per segment (once per candidate t plus the continuation "
                              "pass), so kept smaller than the 64 used by the one-shot pool "
                              "scorers in generate_pref_labels.py / generate_corr_labels.py.")
+    parser.add_argument("--transient-steps", type=int, default=None,
+                        help="If set, cap each hold candidate's simulated prefix at this many "
+                             "steps and repeat the last step for the rest of the horizon "
+                             "(unverified fixed-point assumption -- much cheaper, not grounded "
+                             "beyond this many steps; see rollout_hold's docstring). Default: "
+                             "None, simulate the full horizon for every candidate.")
     parser.add_argument("--n-workers", type=int, default=1,
                         help="Worker processes for intra-shard parallelism across segments "
                              "(default: 1). Set to match --cpus-per-task in the SLURM template.")
@@ -245,6 +251,7 @@ def main():
     for i, result in ehc.run_parallel(
         tasks, args.n_workers, make_oracle_env_fn, args.discount,
         args.mcmc_samples, args.min_horizon, args.threshold, stop_early=True,
+        transient_steps=args.transient_steps,
     ):
         _handle_result(i, result)
         n_processed += 1

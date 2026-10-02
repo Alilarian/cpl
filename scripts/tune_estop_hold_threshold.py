@@ -66,6 +66,12 @@ def main():
     parser.add_argument("--min-horizon", type=int, default=5)
     parser.add_argument("--discount", type=float, default=0.99)
     parser.add_argument("--mcmc-samples", type=int, default=32)
+    parser.add_argument("--transient-steps", type=int, default=None,
+                        help="If set, cap each hold candidate's simulated prefix at this many "
+                             "steps and repeat the last step for the rest of the horizon "
+                             "(unverified fixed-point assumption -- much cheaper, not grounded "
+                             "beyond this many steps; see rollout_hold's docstring). Default: "
+                             "None, simulate the full horizon for every candidate.")
     parser.add_argument("--n-workers", type=int, default=1)
     parser.add_argument("--n-segments", type=int, default=500,
                         help="Calibration subset size, randomly sampled from the pool "
@@ -97,6 +103,7 @@ def main():
     for k, (i, result) in enumerate(ehc.run_parallel(
         tasks, args.n_workers, make_oracle_env_fn, args.discount,
         args.mcmc_samples, args.min_horizon, threshold=0.0, stop_early=False,
+        transient_steps=args.transient_steps,
     )):
         times = [t for t, _ in result["gaps"]]
         gaps = [d for _, d in result["gaps"]]

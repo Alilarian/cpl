@@ -222,27 +222,55 @@ def make_hold_action(gripper_command, act_dim):
     return action
 
 
-def rollout_hold(env, state_t, gripper_command, horizon, act_dim):
+def rollout_hold(env, state_t, gripper_command, horizon, act_dim, transient_steps=None):
     """
     Restore env to state_t and roll the fixed hold controller forward for
     `horizon` steps.
+
+    transient_steps: if None (default), simulate the full `horizon` steps for
+        real -- the original, fully-grounded behavior. If an int, simulate at
+        most `min(transient_steps, horizon)` real steps, then ASSUME the
+        system has reached a fixed point and repeat the last simulated
+        (obs, action, reward) for the remaining horizon - transient_steps
+        steps instead of continuing to step the simulator.
+
+        This is an unverified assumption, not a checked one -- there is no
+        settle detection here (no qvel/obs-stability check). It trades
+        groundedness for speed: cheaper to run, but a candidate whose hold
+        branch hasn't actually reached rest by `transient_steps` (e.g. an
+        object still settling, residual arm momentum) will get a wrong
+        reward/final-state for the repeated tail, silently. Use only when
+        that risk is acceptable (e.g. fast local iteration) -- for anything
+        whose results you intend to trust, verify against transient_steps=None
+        on a sample of candidates first (per the spec's calibration guidance:
+        compare the shortcut's scores to full rollouts before trusting it).
 
     Returns dict:
         obs      : (n_steps, obs_dim)  pre-step states, index 0 = s_t
         action   : (n_steps, act_dim)  the (identical) hold action, repeated
         reward   : (n_steps,)          oracle-definition reward at each hold step
+                                        (synthetic/repeated beyond transient_steps
+                                        when the shortcut is active)
         final_obs: (obs_dim,)          state after the last executed hold step
-        n_steps  : int                 steps actually executed (< horizon only
-                                        if the env signalled done early -- see
-                                        module docstring on the endpoint
-                                        convention for why that should not
-                                        happen for ordinary segments here)
+                                        (assumed unchanged beyond transient_steps
+                                        when the shortcut is active)
+        n_steps  : int                 steps represented in obs/action/reward
+                                        (== horizon whenever the shortcut fills
+                                        in the tail; < horizon only if the env
+                                        signalled done before transient_steps
+                                        was reached -- see module docstring on
+                                        the endpoint convention for why that
+                                        should not happen for ordinary segments
+                                        here)
     """
     obs = restore_state(env, state_t)
     hold_action = make_hold_action(gripper_command, act_dim)
 
+    n_sim = horizon if transient_steps is None else min(transient_steps, horizon)
+
     obs_list, act_list, rew_list = [], [], []
-    for _ in range(horizon):
+    done = False
+    for _ in range(n_sim):
         obs_list.append(obs)
         next_obs, reward, done = env_step(env, hold_action)
         act_list.append(hold_action.copy())
@@ -250,6 +278,15 @@ def rollout_hold(env, state_t, gripper_command, horizon, act_dim):
         obs = next_obs
         if done:
             break
+
+    if transient_steps is not None and len(act_list) == n_sim and not done and n_sim < horizon:
+        # Fixed-point assumption: repeat the last simulated step instead of
+        # continuing to simulate. `obs` already holds the post-transient state
+        # (unchanged, by assumption) for every repeated step's "pre-step" obs.
+        n_repeat = horizon - n_sim
+        obs_list.extend([obs] * n_repeat)
+        act_list.extend([hold_action.copy()] * n_repeat)
+        rew_list.extend([rew_list[-1]] * n_repeat)
 
     return {
         "obs": np.stack(obs_list, axis=0).astype(np.float32),
@@ -277,6 +314,7 @@ def evaluate_segment(
     min_horizon=1,
     threshold=0.0,
     stop_early=True,
+    transient_steps=None,
 ):
     """
     Run the deterministic stopping search over one pool segment.
@@ -288,6 +326,11 @@ def evaluate_segment(
         (spec's "do not stop at the first crossing ... you need the whole
         sequence to evaluate multiple thresholds without rerunning
         simulations") -- evaluates every eligible t regardless of threshold.
+    transient_steps: forwarded to rollout_hold -- None (default) simulates each
+        hold candidate's full horizon for real. An int caps the simulated
+        prefix and repeats the last step for the remainder (unverified fixed-
+        point assumption, see rollout_hold's docstring) -- much cheaper, not
+        grounded beyond transient_steps.
 
     Returns a dict:
         stopped     : bool
@@ -315,7 +358,7 @@ def evaluate_segment(
     for t in range(0, T - min_horizon + 1):
         horizon = T - t
         gripper = gripper_command_at(action_i, t)
-        hold = rollout_hold(env, state_i[t], gripper, horizon, act_dim)
+        hold = rollout_hold(env, state_i[t], gripper, horizon, act_dim, transient_steps=transient_steps)
 
         if hold["n_steps"] < horizon:
             gaps.append((t, None))
@@ -386,11 +429,13 @@ def make_oracle_env(run_dir, oracle_checkpoint, device="cpu"):
     return load_model(run_dir, os.path.join(run_dir, oracle_checkpoint), device)
 
 
-def _init_worker(make_oracle_env_fn, gamma, mcmc_samples, min_horizon, threshold, stop_early):
+def _init_worker(make_oracle_env_fn, gamma, mcmc_samples, min_horizon, threshold, stop_early,
+                  transient_steps=None):
     oracle, env = make_oracle_env_fn()
     _worker_ctx.update(
         oracle=oracle, env=env, gamma=gamma, mcmc_samples=mcmc_samples,
         min_horizon=min_horizon, threshold=threshold, stop_early=stop_early,
+        transient_steps=transient_steps,
     )
 
 
@@ -401,12 +446,13 @@ def _process_task(task):
         ctx["env"], ctx["oracle"], obs_i, action_i, reward_i, state_i,
         ctx["gamma"], ctx["mcmc_samples"], "cpu",
         min_horizon=ctx["min_horizon"], threshold=ctx["threshold"], stop_early=ctx["stop_early"],
+        transient_steps=ctx.get("transient_steps"),
     )
     return i, result
 
 
 def run_parallel(tasks, n_workers, make_oracle_env_fn, gamma, mcmc_samples,
-                  min_horizon, threshold, stop_early):
+                  min_horizon, threshold, stop_early, transient_steps=None):
     """
     Yields (i, result) pairs from evaluate_segment for every task in `tasks`
     (an iterable of (i, obs_i, action_i, reward_i, state_i)).
@@ -419,13 +465,17 @@ def run_parallel(tasks, n_workers, make_oracle_env_fn, gamma, mcmc_samples,
         oracle_checkpoint); tests can inject a synthetic factory with no
         MetaWorld/CHPC dependency at all.
 
+    transient_steps: forwarded to evaluate_segment/rollout_hold on every task --
+        None (default, fully-grounded) or an int (fixed-transient shortcut,
+        see rollout_hold's docstring for the trade-off).
+
     n_workers <= 1: sequential, in-process (no multiprocessing overhead).
     n_workers > 1 : a spawn-context multiprocessing.Pool with one persistent
         worker per process (spawn, not fork, for MuJoCo/CUDA safety); results
         are yielded in submission order (chunksize=1 for even load balancing
         across variable-cost segments, at the cost of some IPC overhead).
     """
-    init_args = (make_oracle_env_fn, gamma, mcmc_samples, min_horizon, threshold, stop_early)
+    init_args = (make_oracle_env_fn, gamma, mcmc_samples, min_horizon, threshold, stop_early, transient_steps)
     if n_workers <= 1:
         _init_worker(*init_args)
         for task in tasks:

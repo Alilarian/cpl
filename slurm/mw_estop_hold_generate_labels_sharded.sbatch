@@ -23,7 +23,7 @@
 #       --output      <OUTPUT_DIR>/<ENV_NAME>/estop_hold_nostop.npz
 #
 # Usage:
-#   ENV_NAME=mw_drawer-open-v2 THRESHOLD=1.0 NUM_SHARDS=8 \
+#   ENV_NAME=mw_drawer-open-v2 THRESHOLD=1.0 NUM_SHARDS=8 SUBSAMPLE_N=30000 \
 #     sbatch --array=0-7 --account=<account> --partition=<partition> \
 #            [--time=HH:MM:SS] [--cpus-per-task=N] [--mem=XG] \
 #            slurm/mw_estop_hold_generate_labels_sharded.sbatch
@@ -39,14 +39,22 @@
 #   ENV_NAME            default: mw_drawer-open-v2
 #   THRESHOLD           required: fixed stopping threshold c >= 0
 #   MIN_HORIZON         default: 5
-#   ORACLE_RUNS_BASE    default: runs/runs/chpc/oracle_sac_seeds  (relative to repo root)
-#   ORACLE_SEED         default: seed-1  (set to "" for a flat <env>/ layout with no
-#                                         seed subdir, e.g. /scratch/.../oracle_sac_1m)
+#   ORACLE_RUNS_BASE    default: /scratch/general/vast/u1472210/oracle_sac_1m (flat <env>/
+#                                 layout, no seed subdir -- matches the live CHPC checkpoints)
+#   ORACLE_SEED         default: ""  (set to e.g. "seed-1" if yours uses a seed subdir instead)
 #   POOL_DIR            default: /scratch/general/vast/u1472210/mw_de_pool
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/estop_hold_labels
 #   NUM_SHARDS          default: 8
 #   N_WORKERS           default: $SLURM_CPUS_PER_TASK (intra-shard multiprocessing)
-#   MAX_SEGMENTS        default: unset (debug/testing cap, applied per shard)
+#   MAX_SEGMENTS        default: unset (debug/testing cap per shard -- a CONTIGUOUS prefix,
+#                                 not representative; use SUBSAMPLE_N for a real subset)
+#   SUBSAMPLE_N         default: unset (draw this many segments uniformly at random from the
+#                                 FULL pool before sharding -- e.g. 30000 out of a 100k pool --
+#                                 reproducible via SUBSAMPLE_SEED. Use this, not MAX_SEGMENTS,
+#                                 to cap how many pool segments get processed: pool.npz is NOT
+#                                 shuffled across checkpoints, so a prefix cap silently biases
+#                                 toward only the earliest/least-trained checkpoints.)
+#   SUBSAMPLE_SEED      default: 0
 
 #SBATCH --job-name=mw_estop_hold_generate_labels
 #SBATCH --nodes=1
@@ -80,13 +88,15 @@ REPO_ROOT="$SUBMIT_DIR"
 
 ENV_NAME="${ENV_NAME:-mw_drawer-open-v2}"
 MIN_HORIZON="${MIN_HORIZON:-5}"
-ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-runs/runs/chpc/oracle_sac_seeds}"
-ORACLE_SEED="${ORACLE_SEED-seed-1}"
+ORACLE_RUNS_BASE="${ORACLE_RUNS_BASE:-/scratch/general/vast/u1472210/oracle_sac_1m}"
+ORACLE_SEED="${ORACLE_SEED-}"
 POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/estop_hold_labels}"
 NUM_SHARDS="${NUM_SHARDS:-8}"
 N_WORKERS="${N_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
 MAX_SEGMENTS="${MAX_SEGMENTS:-}"
+SUBSAMPLE_N="${SUBSAMPLE_N:-}"
+SUBSAMPLE_SEED="${SUBSAMPLE_SEED:-0}"
 SHARD_ID="$SLURM_ARRAY_TASK_ID"
 
 [[ "$ORACLE_RUNS_BASE" != /* ]] && ORACLE_RUNS_BASE="${REPO_ROOT}/${ORACLE_RUNS_BASE}"
@@ -113,6 +123,8 @@ echo "OUTPUT_DIR    = ${OUTPUT_DIR}"
 echo "NUM_SHARDS    = ${NUM_SHARDS}"
 echo "N_WORKERS     = ${N_WORKERS}"
 echo "MAX_SEGMENTS  = ${MAX_SEGMENTS:-<unset, full shard>}"
+echo "SUBSAMPLE_N   = ${SUBSAMPLE_N:-<unset, full pool>}"
+echo "SUBSAMPLE_SEED= ${SUBSAMPLE_SEED}"
 echo "SHARD_ID      = ${SHARD_ID}"
 echo "=============================="
 
@@ -127,6 +139,9 @@ mkdir -p "${OUTPUT_DIR}/${ENV_NAME}"
 EXTRA_ARGS=()
 if [[ -n "$MAX_SEGMENTS" ]]; then
     EXTRA_ARGS+=(--max-segments "$MAX_SEGMENTS")
+fi
+if [[ -n "$SUBSAMPLE_N" ]]; then
+    EXTRA_ARGS+=(--subsample-n "$SUBSAMPLE_N" --subsample-seed "$SUBSAMPLE_SEED")
 fi
 
 python3 "${REPO_ROOT}/scripts/generate_estop_hold_labels.py" \

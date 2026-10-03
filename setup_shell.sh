@@ -47,6 +47,14 @@ if $USE_MUJOCO_PY; then
     fi
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/.mujoco/mujoco210/bin
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/.mujoco/mujoco200/bin
+    # mujoco_py's installed version (2.1.2.14) matches MuJoCo 2.1's mjvFigure
+    # struct layout (it has `highlightid`; MuJoCo 2.0's does not), so it must
+    # be built against mujoco210, not mujoco200. A machine-wide
+    # MUJOCO_PY_MUJOCO_PATH pointed at mujoco200 (set for a different project)
+    # makes mujoco_py's build fail with "mjvFigure has no member named
+    # highlightid" -- override it here, scoped to this repo, rather than
+    # relying on whatever the shell profile happens to default to.
+    export MUJOCO_PY_MUJOCO_PATH=~/.mujoco/mujoco210
 fi
 
 # First check if we have a GPU available

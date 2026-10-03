@@ -127,7 +127,23 @@ def main():
     parser.add_argument("--save-every", type=int, default=200,
                         help="Checkpoint progress every N processed segments (default: 200).")
     parser.add_argument("--max-segments", type=int, default=None,
-                        help="Cap segments processed per shard (debug/testing).")
+                        help="Cap segments processed per shard (debug/testing). Takes a "
+                             "contiguous prefix of each shard's range -- NOT a representative "
+                             "subsample of the pool (see --subsample-n for that).")
+    parser.add_argument("--subsample-n", type=int, default=None,
+                        help="Draw this many segments uniformly at random from the FULL pool "
+                             "before sharding (reproducible via --subsample-seed). Unlike "
+                             "--max-segments, which takes a contiguous prefix and would silently "
+                             "bias toward whichever checkpoints the pool's earliest rows happen "
+                             "to come from -- pool.npz is NOT shuffled across checkpoints, see "
+                             "build_trajectory_pool.py -- this draws a representative sample "
+                             "across the whole pool (same subsample_n/subsample_seed convention "
+                             "as CorrBuffer). Applied once, before sharding, so --num-shards/"
+                             "--shard-id then partition the subsample, not the raw pool.")
+    parser.add_argument("--subsample-seed", type=int, default=0,
+                        help="Seed for --subsample-n's draw (default: 0). Independent of --seed "
+                             "so re-running with a different --seed doesn't change which "
+                             "segments were sampled.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=str,
                         default="/scratch/general/vast/u1472210/estop_hold_labels")
@@ -158,6 +174,18 @@ def main():
     N, T, obs_dim = pool_obs.shape
     act_dim = pool_action.shape[-1]
     print(f"N={N:,} segments, T={T}, obs_dim={obs_dim}, act_dim={act_dim}")
+
+    orig_pool_idx = np.arange(N)
+    if args.subsample_n is not None:
+        assert args.subsample_n <= N, f"--subsample-n={args.subsample_n} exceeds pool size {N}"
+        rng = np.random.default_rng(args.subsample_seed)
+        keep = np.sort(rng.choice(N, size=args.subsample_n, replace=False))
+        pool_obs, pool_action, pool_reward, pool_state, pool_ckpt = (
+            pool_obs[keep], pool_action[keep], pool_reward[keep], pool_state[keep], pool_ckpt[keep],
+        )
+        orig_pool_idx = keep
+        N = args.subsample_n
+        print(f"Subsampled to N={N:,} segments (subsample_seed={args.subsample_seed})")
 
     assert 0 <= args.shard_id < args.num_shards
     if args.num_shards > 1:
@@ -219,10 +247,10 @@ def main():
             out_horizon.append(result["horizon"])
             out_stop_idx.append(result["stop_index"])
             out_gap.append(result["oracle_gap"])
-            out_pool_idx.append(i)
+            out_pool_idx.append(int(orig_pool_idx[i]))
             out_ckpt.append(int(pool_ckpt[i]))
         else:
-            ns_pool_idx.append(i)
+            ns_pool_idx.append(int(orig_pool_idx[i]))
             ns_max_gap.append(ehc.max_gap(result["gaps"]))
             ns_ckpt.append(int(pool_ckpt[i]))
 

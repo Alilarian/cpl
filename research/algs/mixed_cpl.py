@@ -83,9 +83,21 @@ class MixedCPL(CPL):
         lp = self._log_prob(obs.reshape(B * K, T, -1), action.reshape(B * K, T, -1))
         lp = lp.reshape(B, K, T)
 
-        bc_loss = -lp[torch.arange(B, device=lp.device), chosen, :].mean()
+        # Zero-padded components (e.g. EstopHoldBuffer, unlike the repeat-padded
+        # demo/pref/corr/credit contract) carry a per-row real length in
+        # "horizon" that MUST be masked out before summing/averaging over T --
+        # see EstopHoldCPL._horizon_mask. Components without "horizon" (every
+        # repeat-padded type) keep the original unmasked full-T reduction.
+        if "horizon" in sub_batch:
+            time = torch.arange(T, device=lp.device)
+            mask = (time.unsqueeze(0) < sub_batch["horizon"].long().unsqueeze(1)).to(dtype=lp.dtype)  # (B, T)
+            bc_lp = lp[torch.arange(B, device=lp.device), chosen, :]  # (B, T)
+            bc_loss = -(bc_lp * mask).sum() / mask.sum().clamp(min=1)
+            seg_adv = self.alpha * (lp * mask.unsqueeze(1)).sum(dim=-1)  # (B, K)
+        else:
+            bc_loss = -lp[torch.arange(B, device=lp.device), chosen, :].mean()
+            seg_adv = self.alpha * lp.sum(dim=-1)  # (B, K)
 
-        seg_adv = self.alpha * lp.sum(dim=-1)  # (B, K)
         loss, accuracy = biased_choice_cross_entropy(seg_adv, chosen, bias=self.contrastive_bias)
         return loss, bc_loss, accuracy
 

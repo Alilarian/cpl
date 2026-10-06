@@ -31,18 +31,27 @@ class EstopHoldBuffer(torch.utils.data.IterableDataset):
         horizon    : (B,)  int32 -- real (unpadded) length, shared by both arms of a pair
         stop_index : (B,)  int32 -- tau
         oracle_gap : (B,)  float32 -- Delta_tau
+        label      : (B,)  float32, always 0 (hold is always the preferred arm) --
+                     matches CorrBuffer/DemoBuffer's "label" convention so this class
+                     can also be used as a MixedFeedbackBuffer component (see
+                     research/algs/mixed_cpl.py::MixedCPL, which masks by `horizon`
+                     when present instead of assuming repeat-padding).
 
     Args:
         observation_space : gym observation space (used for type-checking only)
         action_space      : gym action space (used for type-checking only)
         path              : path to estop_hold_labels.npz
         batch_size        : number of pairs per batch
-        capacity          : if set, only load the first N samples
+        capacity          : if set, only load the first N samples (mutually exclusive with subsample_n)
         action_eps        : clips actions to [-1+eps, 1-eps] (default 1e-5)
         reward_scale      : scalar multiplier applied to rewards
         reward_shift      : scalar offset applied to rewards after scaling
         split             : "all" (default, preserves existing behaviour), "train", or "val"
         val_frac          : fraction of pairs held out for "val" when split != "all"
+        subsample_n       : if set, draw this many pairs uniformly at random (reproducible via
+                             subsample_seed) instead of taking a contiguous prefix. Mutually
+                             exclusive with capacity.
+        subsample_seed    : RNG seed for subsample_n (default 0)
     """
 
     def __init__(
@@ -57,9 +66,12 @@ class EstopHoldBuffer(torch.utils.data.IterableDataset):
         reward_shift: float = 0.0,
         split: str = "all",
         val_frac: float = 0.1,
+        subsample_n: Optional[int] = None,
+        subsample_seed: int = 0,
     ):
         assert path is not None, "Must provide path to estop_hold_labels.npz"
         assert split in ("all", "train", "val")
+        assert capacity is None or subsample_n is None, "capacity and subsample_n are mutually exclusive"
 
         with open(path, "rb") as f:
             raw = np.load(f)
@@ -78,6 +90,13 @@ class EstopHoldBuffer(torch.utils.data.IterableDataset):
             split_idx = np.sort(split_idx)
             obs, action, reward = obs[split_idx], action[split_idx], reward[split_idx]
             horizon, stop_index, oracle_gap = horizon[split_idx], stop_index[split_idx], oracle_gap[split_idx]
+
+        if subsample_n is not None:
+            N_avail = obs.shape[0]
+            assert subsample_n <= N_avail, f"subsample_n={subsample_n} exceeds available {N_avail} rows"
+            keep = np.sort(np.random.RandomState(subsample_seed).permutation(N_avail)[:subsample_n])
+            obs, action, reward = obs[keep], action[keep], reward[keep]
+            horizon, stop_index, oracle_gap = horizon[keep], stop_index[keep], oracle_gap[keep]
 
         N = obs.shape[0]
         if capacity is not None and capacity < N:
@@ -123,4 +142,9 @@ class EstopHoldBuffer(torch.utils.data.IterableDataset):
                 "horizon": self.horizon[batch_inds],          # (B,)
                 "stop_index": self.stop_index[batch_inds],   # (B,)
                 "oracle_gap": self.oracle_gap[batch_inds],   # (B,)
+                # Index of the preferred arm, always 0 (hold) -- matches the
+                # "label" convention shared by every other feedback-type buffer
+                # (CorrBuffer/DemoBuffer), so EstopHoldBuffer can be mixed into
+                # MixedFeedbackBuffer/MixedCPL like any other component.
+                "label": np.zeros(len(batch_inds), dtype=np.float32),
             }

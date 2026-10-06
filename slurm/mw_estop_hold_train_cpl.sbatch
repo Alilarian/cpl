@@ -39,6 +39,10 @@
 #   WANDB_PROJECT      default: mw-cpl-estop-hold
 #   BC_STEPS           override alg_kwargs.bc_steps (config default: 20000)
 #   TOTAL_STEPS        override trainer_kwargs.total_steps (e.g. 500000)
+#   SUBSAMPLE_N        if set, draw this many pairs uniformly at random from the merged
+#                      label file (reproducible via SUBSAMPLE_SEED) instead of training on
+#                      all of it -- e.g. SUBSAMPLE_N=10000
+#   SUBSAMPLE_SEED     default: 0
 #   DEVICE             default: cpu (scripts/train.py --device; set to "cuda"
 #                                    to run on GPU, and pass --gres=gpu:1)
 #   CONDA_ENV_NAME     default: cpl (set to your GPU-capable env, e.g. cpl_gpu,
@@ -90,7 +94,9 @@ fi
 
 CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/${CONFIG_FILE}"
 LABELS_NPZ="${LABELS_DIR}/${ENV_NAME}/${LABEL_FILE}"
-RUN_PATH="${RUNS_DIR}/${ENV_NAME}/estop_hold_s${SEED}"
+RUN_TAG="estop_hold_s${SEED}"
+[[ -n "${SUBSAMPLE_N:-}" ]] && RUN_TAG="${RUN_TAG}_n${SUBSAMPLE_N}"
+RUN_PATH="${RUNS_DIR}/${ENV_NAME}/${RUN_TAG}"
 
 echo "=============================="
 echo "SLURM_JOB_ID   = ${SLURM_JOB_ID:-}"
@@ -100,6 +106,8 @@ echo "SEED           = ${SEED}"
 echo "CONFIG         = ${CONFIG_PATH}"
 echo "LABELS         = ${LABELS_NPZ}"
 echo "RUN_PATH       = ${RUN_PATH}"
+echo "SUBSAMPLE_N    = ${SUBSAMPLE_N:-<unset, full dataset>}"
+echo "SUBSAMPLE_SEED = ${SUBSAMPLE_SEED:-0}"
 echo "DEVICE         = ${DEVICE}"
 echo "CONDA_ENV_NAME = ${CONDA_ENV_NAME:-cpl (default)}"
 echo "=============================="
@@ -143,12 +151,16 @@ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 EXTRA_SETS=()
 [[ -n "${BC_STEPS:-}" ]]    && EXTRA_SETS+=(--set "alg_kwargs.bc_steps=${BC_STEPS}")
 [[ -n "${TOTAL_STEPS:-}" ]] && EXTRA_SETS+=(--set "trainer_kwargs.total_steps=${TOTAL_STEPS}")
+if [[ -n "${SUBSAMPLE_N:-}" ]]; then
+    EXTRA_SETS+=(--set "dataset_kwargs.subsample_n=${SUBSAMPLE_N}")
+    EXTRA_SETS+=(--set "dataset_kwargs.subsample_seed=${SUBSAMPLE_SEED:-0}")
+fi
 
 # WandB
 # Run name: "<env>/estop_hold_s<seed>"  — unique across all envs
 # Group:    "<env>"                       — groups runs per env in the UI
 export WANDB_PROJECT="${WANDB_PROJECT:-mw-cpl-estop-hold}"
-export WANDB_RUN_NAME="${ENV_NAME}/estop_hold_s${SEED}"
+export WANDB_RUN_NAME="${ENV_NAME}/${RUN_TAG}"
 export WANDB_GROUP="${ENV_NAME}"
 
 python3 "${REPO_ROOT}/scripts/train.py" \

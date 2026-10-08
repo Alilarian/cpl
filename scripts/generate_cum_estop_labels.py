@@ -34,6 +34,7 @@ Usage:
         --output-dir  datasets/cum_estop_labels
 """
 import argparse
+import functools
 import json
 import os
 import re
@@ -43,24 +44,25 @@ import numpy as np
 import scripts.cum_estop_common as cec
 
 
-def _make_envs(run_dir, oracle_checkpoint, bands, device):
-    def factory():
-        oracle, env = cec.load_policy(run_dir, os.path.join(run_dir, oracle_checkpoint), device)
-        obs_space, act_space = env.observation_space, env.action_space
-        intermediate = {
-            b["checkpoint"]: cec.load_policy_weights_only(
-                run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
-            )
-            for b in bands["intermediate"]
-        }
-        weak = {
-            b["checkpoint"]: cec.load_policy_weights_only(
-                run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
-            )
-            for b in bands["weak"]
-        }
-        return {"oracle": oracle, "env": env, "intermediate": intermediate, "weak": weak}
-    return factory
+def _load_envs(run_dir, oracle_checkpoint, bands, device):
+    """Module-level (not a local closure) so functools.partial(...) over it
+    stays picklable under multiprocessing's spawn context -- a bare nested
+    closure isn't."""
+    oracle, env = cec.load_policy(run_dir, os.path.join(run_dir, oracle_checkpoint), device)
+    obs_space, act_space = env.observation_space, env.action_space
+    intermediate = {
+        b["checkpoint"]: cec.load_policy_weights_only(
+            run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
+        )
+        for b in bands["intermediate"]
+    }
+    weak = {
+        b["checkpoint"]: cec.load_policy_weights_only(
+            run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
+        )
+        for b in bands["weak"]
+    }
+    return {"oracle": oracle, "env": env, "intermediate": intermediate, "weak": weak}
 
 
 def _try_correction(ctx, pool_index, attempt, tau, T, obs_i, action_i, reward_i, state_i,
@@ -226,7 +228,7 @@ def main():
         correction_budget=args.correction_budget, negative_budget=args.negative_budget,
         seed=args.seed,
     )
-    make_envs_fn = _make_envs(args.run_dir, args.oracle_checkpoint, bands, args.device)
+    make_envs_fn = functools.partial(_load_envs, args.run_dir, args.oracle_checkpoint, bands, args.device)
     results = cec.run_parallel(tasks, args.n_workers, make_envs_fn, _process_task, worker_kwargs)
 
     stop_rows, demo_rows, unresolved_rows = [], [], []

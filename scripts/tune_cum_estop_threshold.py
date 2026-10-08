@@ -29,11 +29,12 @@ import numpy as np
 import scripts.cum_estop_common as cec
 
 
-def _make_envs(run_dir, oracle_checkpoint, device):
-    def factory():
-        oracle, env = cec.load_policy(run_dir, os.path.join(run_dir, oracle_checkpoint), device)
-        return {"oracle": oracle, "env": env}
-    return factory
+def _load_envs(run_dir, oracle_checkpoint, device):
+    """Module-level (not a local closure) so functools.partial(...) over it
+    stays picklable under multiprocessing's spawn context -- a bare nested
+    closure isn't."""
+    oracle, env = cec.load_policy(run_dir, os.path.join(run_dir, oracle_checkpoint), device)
+    return {"oracle": oracle, "env": env}
 
 
 def _process_task(task):
@@ -77,7 +78,7 @@ def main():
 
     tasks = [(int(i), pool_obs[i], pool_action[i], pool_reward[i], pool_state[i]) for i in idx]
     worker_kwargs = dict(gamma=args.gamma, mcmc_samples=args.mcmc_samples, device=args.device)
-    make_envs_fn = _make_envs(args.run_dir, args.oracle_checkpoint, args.device)
+    make_envs_fn = functools.partial(_load_envs, args.run_dir, args.oracle_checkpoint, args.device)
     results = cec.run_parallel(tasks, args.n_workers, make_envs_fn, _process_task, worker_kwargs)
 
     T = pool_obs.shape[1]

@@ -37,9 +37,10 @@
 #   OUTPUT_DIR          default: /scratch/general/vast/u1472210/cum_estop_labels
 #   GAMMA               default: 0.99
 #   MCMC_SAMPLES        default: 32
-#   DELTA_C             default: 0.1
 #   DELTA_N             default: 0.3
-#   CORRECTION_BUDGET   default: 8
+#   CORRECTION_BUDGET   default: 8 (retries only on simulator early-termination, not quality -- a
+#                                 correction is accepted on the first completed rollout regardless of
+#                                 whether it beats the original; whichever side scores higher wins)
 #   NEGATIVE_BUDGET     default: 8
 #   NUM_SHARDS          default: 8
 #   N_WORKERS           default: $SLURM_CPUS_PER_TASK
@@ -83,7 +84,6 @@ POOL_DIR="${POOL_DIR:-/scratch/general/vast/u1472210/mw_de_pool}"
 OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/cum_estop_labels}"
 GAMMA="${GAMMA:-0.99}"
 MCMC_SAMPLES="${MCMC_SAMPLES:-32}"
-DELTA_C="${DELTA_C:-0.1}"
 DELTA_N="${DELTA_N:-0.3}"
 CORRECTION_BUDGET="${CORRECTION_BUDGET:-8}"
 NEGATIVE_BUDGET="${NEGATIVE_BUDGET:-8}"
@@ -143,7 +143,6 @@ python3 "${REPO_ROOT}/scripts/generate_cum_estop_labels.py" \
     --H "$H" \
     --gamma "$GAMMA" \
     --mcmc-samples "$MCMC_SAMPLES" \
-    --delta-c "$DELTA_C" \
     --delta-n "$DELTA_N" \
     --correction-budget "$CORRECTION_BUDGET" \
     --negative-budget "$NEGATIVE_BUDGET" \

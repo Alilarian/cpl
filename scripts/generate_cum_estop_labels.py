@@ -1,11 +1,21 @@
 """
 Phases 3, 5, 6 of the Cumulative E-stop model: for each pool segment, find
 the first cumulative-deficit threshold crossing (or none), then either
-  - generate and verify an imperfect correction from an intermediate-quality
-    checkpoint bank (Pi_M), starting exactly at the stop state s_tau, or
+  - generate ONE correction rollout from an intermediate-quality checkpoint
+    bank (Pi_M), starting exactly at the stop state s_tau, and compare it
+    HONESTLY against the original continuation: whichever side actually
+    scores higher becomes the preferred arm (sometimes the correction,
+    sometimes the original). No margin, no retrying across checkpoints to
+    find a bigger gap -- the original behavior policy already succeeds
+    ~50% of the time, so searching for the best of several draws would
+    systematically bias toward larger, less representative gaps than a
+    single honest comparison gives. The retry budget here exists only to
+    recover from a rollout that terminates early (a simulator failure, not
+    a quality judgment), not to search for a better outcome; or
   - (no stop) generate and verify one substantially-worse counterfactual from
     a weak checkpoint bank (Pi_B), starting at s_0, keeping the full original
-    rollout as the accepted demonstration.
+    rollout as the accepted demonstration. Unchanged: this branch is supposed
+    to be a clearly-bad contrast, so it keeps its margin + retry-until-passes.
 
 Output is two label files, each in the SAME (obs, action, reward) K=2 schema
 CorrBuffer already reads (both arms are now full, equal, T-length
@@ -13,9 +23,10 @@ trajectories -- no padding/masking needed at all, so no new buffer class is
 needed on the training side):
 
     <output-dir>/<env>/stop_correction_labels.npz
-        obs/action/reward : (N, 2, T, ...)   index 0 = corrected (preferred),
-                                               index 1 = original (non-preferred)
-        stop_index, checkpoint_step, gap, attempts : (N,)  provenance
+        obs/action/reward : (N, 2, T, ...)   index 0 = preferred (whichever of
+                                               corrected/original scored higher),
+                                               index 1 = the other one
+        stop_index, checkpoint_step, gap, attempts, corrected_is_preferred : (N,)
 
     <output-dir>/<env>/no_stop_demo_labels.npz
         obs/action/reward : (N, 2, T, ...)   index 0 = accepted demo (preferred),
@@ -24,6 +35,8 @@ needed on the training side):
 
     <output-dir>/<env>/unresolved_events.npz
         pool_index, event_type (0=stop_unresolved, 1=no_stop_unpaired) : (N,)
+        (stop_unresolved now only happens if every correction attempt in the
+        budget terminates early -- a simulator failure, not a quality miss)
 
 Usage:
     python3 scripts/generate_cum_estop_labels.py \\
@@ -65,9 +78,13 @@ def _load_envs(run_dir, oracle_checkpoint, bands, device):
     return {"oracle": oracle, "env": env, "intermediate": intermediate, "weak": weak}
 
 
-def _try_correction(ctx, pool_index, attempt, tau, T, obs_i, action_i, reward_i, state_i,
-                     original_suffix_score, prefix_score_values):
-    """One candidate correction attempt. Returns (passed, result_dict_or_None)."""
+def _correction_attempt(ctx, pool_index, attempt, tau, T, obs_i, action_i, reward_i, state_i,
+                         original_suffix_score):
+    """One correction rollout. Returns (ok, result_dict_or_None) -- ok=False
+    only on early termination (a simulator failure to retry past), never on
+    "didn't win": the correction is compared honestly against the original,
+    and whichever side actually scores higher becomes the preferred arm. No
+    cherry-picking across retries for a bigger gap."""
     names = list(ctx["intermediate"].keys())
     rng = np.random.default_rng((ctx["seed"], pool_index, attempt))
     name = names[rng.integers(len(names))]
@@ -77,23 +94,27 @@ def _try_correction(ctx, pool_index, attempt, tau, T, obs_i, action_i, reward_i,
     correction = cec.rollout_policy(ctx["env"], state_i[tau], policy, horizon, ctx["device"],
                                      stochastic=True)
     if correction["n_steps"] < horizon:
-        return False, None  # early termination -- treat as a failed candidate, retry
+        return False, None  # early termination -- retry with a different checkpoint draw
 
     boundary_obs = np.concatenate([correction["obs"], correction["final_obs"][None]], axis=0)
     values = cec.oracle_values(boundary_obs, ctx["oracle"], ctx["mcmc_samples"], ctx["device"])
     correction_score = cec.segment_score(correction["reward"], values, ctx["gamma"])
-
     gap = correction_score - original_suffix_score
-    margin = ctx["delta_c"] * cec.discounted_length(horizon, ctx["gamma"])
-    if gap < margin:
-        return False, None
 
-    corrected_full_obs = np.concatenate([obs_i[:tau], correction["obs"]], axis=0)
-    corrected_full_action = np.concatenate([action_i[:tau], correction["action"]], axis=0)
-    corrected_full_reward = np.concatenate([reward_i[:tau], correction["reward"]], axis=0)
+    corrected = {
+        "obs": np.concatenate([obs_i[:tau], correction["obs"]], axis=0),
+        "action": np.concatenate([action_i[:tau], correction["action"]], axis=0),
+        "reward": np.concatenate([reward_i[:tau], correction["reward"]], axis=0),
+    }
+    original = {"obs": obs_i, "action": action_i, "reward": reward_i}
+
+    corrected_is_preferred = bool(gap >= 0)
+    preferred, other = (corrected, original) if corrected_is_preferred else (original, corrected)
+
     return True, {
-        "obs": corrected_full_obs, "action": corrected_full_action, "reward": corrected_full_reward,
-        "checkpoint": name, "gap": gap, "attempts": attempt + 1,
+        "preferred": preferred, "other": other,
+        "checkpoint": name, "gap": float(abs(gap)), "attempts": attempt + 1,
+        "corrected_is_preferred": corrected_is_preferred,
     }
 
 
@@ -137,14 +158,11 @@ def _process_task(task):
     if tau is not None:
         original_suffix_score = cec.segment_score(reward_i[tau:], values[tau:], ctx["gamma"])
         for attempt in range(ctx["correction_budget"]):
-            passed, result = _try_correction(
-                ctx, i, attempt, tau, T, obs_i, action_i, reward_i, state_i,
-                original_suffix_score, values,
+            ok, result = _correction_attempt(
+                ctx, i, attempt, tau, T, obs_i, action_i, reward_i, state_i, original_suffix_score,
             )
-            if passed:
-                return i, "stop_correction", tau, result, {
-                    "original_obs": obs_i, "original_action": action_i, "original_reward": reward_i,
-                }
+            if ok:
+                return i, "stop_correction", tau, result, None
         return i, "stop_unresolved", tau, None, None
 
     accepted_score = cec.segment_score(reward_i, values, ctx["gamma"])
@@ -166,11 +184,8 @@ def main():
     parser.add_argument("--H", type=float, required=True, help="cumulative deficit threshold")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--mcmc-samples", type=int, default=32)
-    parser.add_argument("--delta-c", type=float, default=0.1,
-                         help="min average per-step improvement required to accept a correction")
     parser.add_argument("--delta-n", type=float, default=0.3,
-                         help="min average per-step gap required to accept a no-stop negative "
-                              "(should exceed --delta-c, per spec Section 7.2)")
+                         help="min average per-step gap required to accept a no-stop negative")
     parser.add_argument("--correction-budget", type=int, default=8)
     parser.add_argument("--negative-budget", type=int, default=8)
     parser.add_argument("--n-workers", type=int, default=1)
@@ -184,8 +199,6 @@ def main():
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--env-name", type=str, required=True)
     args = parser.parse_args()
-
-    assert args.delta_n >= args.delta_c, "--delta-n should be >= --delta-c (Section 7.2)"
 
     with open(args.bands_path) as f:
         bands = json.load(f)
@@ -224,7 +237,7 @@ def main():
     ]
     worker_kwargs = dict(
         gamma=args.gamma, mcmc_samples=args.mcmc_samples, H=args.H, device=args.device,
-        delta_c=args.delta_c, delta_n=args.delta_n,
+        delta_n=args.delta_n,
         correction_budget=args.correction_budget, negative_budget=args.negative_budget,
         seed=args.seed,
     )
@@ -255,9 +268,9 @@ def main():
     suffix = f"_shard{args.shard_id}of{args.num_shards}"
 
     if stop_rows:
-        obs = np.stack([np.stack([r[2]["obs"], r[3]["original_obs"]]) for r in stop_rows])
-        action = np.stack([np.stack([r[2]["action"], r[3]["original_action"]]) for r in stop_rows])
-        reward = np.stack([np.stack([r[2]["reward"], r[3]["original_reward"]]) for r in stop_rows])
+        obs = np.stack([np.stack([r[2]["preferred"]["obs"], r[2]["other"]["obs"]]) for r in stop_rows])
+        action = np.stack([np.stack([r[2]["preferred"]["action"], r[2]["other"]["action"]]) for r in stop_rows])
+        reward = np.stack([np.stack([r[2]["preferred"]["reward"], r[2]["other"]["reward"]]) for r in stop_rows])
         cec.save_npz(
             os.path.join(out_dir, f"stop_correction_labels{suffix}.npz"),
             obs=obs.astype(np.float32), action=action.astype(np.float32), reward=reward.astype(np.float32),
@@ -266,6 +279,7 @@ def main():
             checkpoint_step=np.array([ckpt_step(r[2]["checkpoint"]) for r in stop_rows], dtype=np.int64),
             gap=np.array([r[2]["gap"] for r in stop_rows], dtype=np.float32),
             attempts=np.array([r[2]["attempts"] for r in stop_rows], dtype=np.int32),
+            corrected_is_preferred=np.array([r[2]["corrected_is_preferred"] for r in stop_rows], dtype=bool),
             H=np.full(len(stop_rows), args.H, dtype=np.float32),
         )
     if demo_rows:

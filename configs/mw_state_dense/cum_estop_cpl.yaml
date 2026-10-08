@@ -1,0 +1,74 @@
+alg: MixedCPL
+alg_kwargs:
+  alpha: 0.1
+  contrastive_bias: 0.75
+  bc_steps: 0
+  bc_coeff: 0.0
+  component_weights: {}   # stop_correction and no_stop_demo both default to 1.0 -> equal branch weighting (lambda=0.5)
+  component_discounts:
+    stop_correction: 0.99
+    no_stop_demo: 0.99
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+
+network: ActorPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    dropout: 0.25
+    output_act: ["import", "torch.nn", "Tanh"]
+    hidden_layers: [512, 512]
+    ortho_init: True
+
+checkpoint: null
+
+eval_env: mw_drawer-open-v2
+
+# Cumulative E-stop model (cumulative_estop_model.md). Both branches store
+# full, equal-length (obs, action, reward) pairs in CorrBuffer's existing
+# schema -- no new buffer/alg class needed, just a real discount (see
+# alg_kwargs.component_discounts) so the identical shared prefix up to the
+# branch point cancels out of the comparison with a gamma**tau scale on the
+# diverging suffix (spec Section 9.2), without any masking/suffix-slicing.
+dataset: MixedFeedbackBuffer
+dataset_kwargs:
+  batch_size: 96
+  components:
+  - name: stop_correction
+    dataset_class: CorrBuffer
+    weight: 0.5
+    dataset_kwargs:
+      path: datasets/cum_estop_labels/mw_drawer-open-v2/stop_correction_labels.npz
+      capacity: null
+  - name: no_stop_demo
+    dataset_class: CorrBuffer
+    weight: 0.5
+    dataset_kwargs:
+      path: datasets/cum_estop_labels/mw_drawer-open-v2/no_stop_demo_labels.npz
+      capacity: null
+
+processor: null
+
+schedule:
+  actor: linear_warmup
+schedule_kwargs:
+  actor:
+    total_steps: 10000
+    multiplier: 1.0
+
+trainer_kwargs:
+  total_steps: 250000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 25
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

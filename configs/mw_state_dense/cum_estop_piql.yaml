@@ -1,0 +1,75 @@
+alg: DemoPIQL
+alg_kwargs:
+  beta: 0.3333
+  expectile: 0.7
+  reward_steps: 50000
+  contrastive_bias: 1.0     # unbiased -- both arms here are equally "real" (a verified correction / a
+                            # verified-worse counterfactual), unlike demo's K-way counterfactual downweight
+  transition_discount: 0.99
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+
+network: ActorCriticValueRewardPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    dropout: 0.25
+    output_act: ["import", "torch.nn", "Tanh"]
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2
+  value_class: MLPValue
+  value_kwargs:
+    ensemble_size: 1
+  reward_class: ContinuousMLPCritic
+  reward_kwargs:
+    ensemble_size: 1
+  act: ["import", "torch.nn", "ReLU"]
+  hidden_layers: [512, 512]
+  ortho_init: True
+
+checkpoint: null
+
+eval_env: mw_drawer-open-v2
+
+# Cumulative E-stop model (cumulative_estop_model.md), both branches
+# concatenated into one flat file by scripts/concat_cum_estop_branches.py --
+# PIQL has no component-weighted mixing mechanism (unlike MixedCPL), so
+# standalone PIQL training here uses natural-frequency weighting across the
+# two branches rather than the lambda=0.5 equal-branch weighting CPL gets.
+# Both arms are full, equal-length T-step trajectories (no padding/masking
+# needed), so plain DemoPIQL + CorrBuffer applies unmodified -- see
+# configs/mw_state_dense/corr_piql.yaml for the same pattern on corr data.
+dataset: CorrBuffer
+dataset_kwargs:
+  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_concat.npz
+  batch_size: 96
+  segment_length: null
+  reward_scale: 1.0
+  reward_shift: 0.0
+  capacity: null
+
+schedule:
+  actor: ["import", "torch.optim.lr_scheduler", "CosineAnnealingLR"]
+schedule_kwargs:
+  actor:
+    T_max: 500000
+
+processor: null
+
+trainer_kwargs:
+  total_steps: 500000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 25
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

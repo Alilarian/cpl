@@ -47,6 +47,20 @@ class MixedCPL(CPL):
                              (default 0.75)
         component_weights : Dict[str, float], loss weight per component name
                              (default {} -> every component weight 1.0)
+        component_discounts : Dict[str, float], gamma applied as gamma**t
+                             (t=0 at the start of whatever's stored for that
+                             component) before summing over T (default {} ->
+                             every component discount 1.0, i.e. the original
+                             flat-sum behavior, unchanged). Needed by the
+                             Cumulative E-stop model (cumulative_estop_model.md):
+                             both of its branches store a full, equal-length
+                             trajectory with a shared prefix up to the branch
+                             point, so a real discount from t=0 makes that
+                             shared prefix cancel out of the comparison with
+                             exactly a gamma**tau scale on the diverging
+                             suffix (spec Section 9.2) -- with no masking and
+                             no suffix-slicing needed in code. Components not
+                             listed here are completely unaffected.
         bc_steps, bc_coeff, alpha : same meaning as in CPL/DemoCPL/
                              CreditAssignmentCPL; bc_loss is combined across
                              components the same way as the main loss.
@@ -57,6 +71,7 @@ class MixedCPL(CPL):
         *args,
         contrastive_bias: float = 0.75,
         component_weights: Optional[Dict[str, float]] = None,
+        component_discounts: Optional[Dict[str, float]] = None,
         bc_steps: int = 0,
         bc_coeff: float = 0.0,
         **kwargs,
@@ -69,6 +84,7 @@ class MixedCPL(CPL):
             **kwargs,
         )
         self.component_weights = {} if component_weights is None else dict(component_weights)
+        self.component_discounts = {} if component_discounts is None else dict(component_discounts)
 
     def _get_component_loss(self, name: str, sub_batch: Dict):
         obs, action = sub_batch["obs"], sub_batch["action"]
@@ -89,14 +105,25 @@ class MixedCPL(CPL):
         # see EstopHoldCPL._horizon_mask. Components without "horizon" (every
         # repeat-padded type) keep the original unmasked full-T reduction.
         if "horizon" in sub_batch:
-            time = torch.arange(T, device=lp.device)
-            mask = (time.unsqueeze(0) < sub_batch["horizon"].long().unsqueeze(1)).to(dtype=lp.dtype)  # (B, T)
-            bc_lp = lp[torch.arange(B, device=lp.device), chosen, :]  # (B, T)
-            bc_loss = -(bc_lp * mask).sum() / mask.sum().clamp(min=1)
-            seg_adv = self.alpha * (lp * mask.unsqueeze(1)).sum(dim=-1)  # (B, K)
+            step_weight = (torch.arange(T, device=lp.device).unsqueeze(0)
+                           < sub_batch["horizon"].long().unsqueeze(1)).to(dtype=lp.dtype)  # (B, T)
         else:
+            step_weight = None
+
+        discount = self.component_discounts.get(name, 1.0)
+        if discount != 1.0:
+            discounts = discount ** torch.arange(T, device=lp.device, dtype=lp.dtype)  # (T,)
+            step_weight = discounts if step_weight is None else step_weight * discounts.unsqueeze(0)
+
+        if step_weight is None:
             bc_loss = -lp[torch.arange(B, device=lp.device), chosen, :].mean()
             seg_adv = self.alpha * lp.sum(dim=-1)  # (B, K)
+        else:
+            bc_weight = step_weight.expand(B, T) if step_weight.dim() == 1 else step_weight  # (B, T)
+            bc_lp = lp[torch.arange(B, device=lp.device), chosen, :]  # (B, T)
+            bc_loss = -(bc_lp * bc_weight).sum() / bc_weight.sum().clamp(min=1e-8)
+            seg_adv = self.alpha * (lp * step_weight.unsqueeze(1) if step_weight.dim() == 2
+                                     else lp * step_weight.view(1, 1, -1)).sum(dim=-1)  # (B, K)
 
         loss, accuracy = biased_choice_cross_entropy(seg_adv, chosen, bias=self.contrastive_bias)
         return loss, bc_loss, accuracy

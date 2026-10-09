@@ -36,7 +36,7 @@ eval_env: mw_drawer-open-v2
 # training time.
 dataset: CorrBuffer
 dataset_kwargs:
-  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10k.npz
+  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10000.npz
   batch_size: 96
   capacity: null
 

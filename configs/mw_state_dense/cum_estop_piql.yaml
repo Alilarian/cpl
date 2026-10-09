@@ -42,7 +42,7 @@ eval_env: mw_drawer-open-v2
 # same pattern on corr data.
 dataset: CorrBuffer
 dataset_kwargs:
-  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10k.npz
+  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10000.npz
   batch_size: 96
   segment_length: null
   reward_scale: 1.0
@@ -53,12 +53,12 @@ schedule:
   actor: ["import", "torch.optim.lr_scheduler", "CosineAnnealingLR"]
 schedule_kwargs:
   actor:
-    T_max: 500000
+    T_max: 250000
 
 processor: null
 
 trainer_kwargs:
-  total_steps: 500000
+  total_steps: 250000
   log_freq: 500
   profile_freq: 500
   eval_freq: 5000

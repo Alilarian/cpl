@@ -1,13 +1,10 @@
-alg: MixedCPL
+alg: DiscountedCorrCPL
 alg_kwargs:
   alpha: 0.1
+  discount: 0.99
   contrastive_bias: 0.75
   bc_steps: 0
   bc_coeff: 0.0
-  component_weights: {}   # stop_correction and no_stop_demo both default to 1.0 -> equal branch weighting (lambda=0.5)
-  component_discounts:
-    stop_correction: 0.99
-    no_stop_demo: 0.99
 
 optim: Adam
 optim_kwargs:
@@ -26,28 +23,22 @@ checkpoint: null
 
 eval_env: mw_drawer-open-v2
 
-# Cumulative E-stop model (cumulative_estop_model.md). Both branches store
-# full, equal-length (obs, action, reward) pairs in CorrBuffer's existing
-# schema -- no new buffer/alg class needed, just a real discount (see
-# alg_kwargs.component_discounts) so the identical shared prefix up to the
-# branch point cancels out of the comparison with a gamma**tau scale on the
-# diverging suffix (spec Section 9.2), without any masking/suffix-slicing.
-dataset: MixedFeedbackBuffer
+# Cumulative E-stop model (cumulative_estop_model.md). Trains on one flat,
+# pre-shuffled 50/50 mix of the two branches (stop_correction, no_stop_demo),
+# built by scripts/build_cum_estop_mix.py -- both arms are always full,
+# equal-length (obs, action, reward) pairs in CorrBuffer's existing schema,
+# so no new buffer class is needed. DiscountedCorrCPL applies a real
+# discount from t=0 so a stop_correction row's shared prefix (up to
+# stop_index) cancels out of the comparison with a gamma**tau scale on the
+# diverging suffix (spec Section 9.2) -- the same discount also applies to
+# no_stop_demo rows (no shared prefix there, but the same global scoring
+# convention per spec Section 9.1), since rows aren't tagged by branch at
+# training time.
+dataset: CorrBuffer
 dataset_kwargs:
+  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10k.npz
   batch_size: 96
-  components:
-  - name: stop_correction
-    dataset_class: CorrBuffer
-    weight: 0.5
-    dataset_kwargs:
-      path: datasets/cum_estop_labels/mw_drawer-open-v2/stop_correction_labels.npz
-      capacity: null
-  - name: no_stop_demo
-    dataset_class: CorrBuffer
-    weight: 0.5
-    dataset_kwargs:
-      path: datasets/cum_estop_labels/mw_drawer-open-v2/no_stop_demo_labels.npz
-      capacity: null
+  capacity: null
 
 processor: null
 

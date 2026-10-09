@@ -2,11 +2,8 @@
 # Train the Cumulative E-stop model with PIQL for one MetaWorld env, across
 # N_SEEDS seeds via a SLURM array -- one task per seed.
 #
-# PIQL has no component-weighted mixing mechanism (unlike MixedCPL), so the
-# two branches (stop_correction, no_stop_demo) are concatenated into one flat
-# file first (scripts/concat_cum_estop_branches.py) -- natural-frequency
-# weighting across branches, not the lambda=0.5 equal-branch weighting CPL
-# gets. The concat step runs once per env and is skipped if its output
+# Trains on the same pre-shuffled 50/50 mix file as cum_estop_train_cpl.sbatch
+# (scripts/build_cum_estop_mix.py), built on first use and skipped if it
 # already exists.
 #
 # Usage (GPU):
@@ -25,6 +22,10 @@
 #   CONFIG_FILE        default: cum_estop_piql.yaml
 #   WANDB_PROJECT      default: mw-piql-cum-estop
 #   TOTAL_STEPS        override trainer_kwargs.total_steps (config default: 500000)
+#   N_PER_BRANCH       rows drawn from EACH branch for the mix (default: 5000, i.e. 10k total)
+#   MIX_SEED           seed for the mix's subsample+shuffle (default: 0) -- use the SAME
+#                      value here and in cum_estop_train_cpl.sbatch to train CPL/PIQL on
+#                      the identical 10k mix
 #   DEVICE             default: cpu (set to "cuda" to run on GPU, with --gres=gpu:1)
 #   CONDA_ENV_NAME     default: cpl (set to your GPU-capable env)
 
@@ -58,6 +59,8 @@ LABELS_DIR="${LABELS_DIR:-/scratch/general/vast/u1472210/cum_estop_labels}"
 RUNS_DIR="${RUNS_DIR:-runs/mw_cum_estop_piql}"
 CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
 CONFIG_FILE="${CONFIG_FILE:-cum_estop_piql.yaml}"
+N_PER_BRANCH="${N_PER_BRANCH:-5000}"
+MIX_SEED="${MIX_SEED:-0}"
 DEVICE="${DEVICE:-cpu}"
 
 read -r -a SEED_ARR <<< "$SEEDS"
@@ -73,14 +76,15 @@ fi
 CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/${CONFIG_FILE}"
 STOP_NPZ="${LABELS_DIR}/${ENV_NAME}/stop_correction_labels.npz"
 DEMO_NPZ="${LABELS_DIR}/${ENV_NAME}/no_stop_demo_labels.npz"
-CONCAT_NPZ="${LABELS_DIR}/${ENV_NAME}/cum_estop_concat.npz"
+MIX_NPZ="${LABELS_DIR}/${ENV_NAME}/cum_estop_mix$((N_PER_BRANCH * 2)).npz"
 RUN_PATH="${RUNS_DIR}/${ENV_NAME}/cum_estop_s${SEED}"
 
 echo "=============================="
 echo "SLURM_JOB_ID   = ${SLURM_JOB_ID:-}"
 echo "ENV_NAME       = ${ENV_NAME}"
 echo "SEED           = ${SEED}"
-echo "CONCAT_NPZ     = ${CONCAT_NPZ}"
+echo "MIX_NPZ        = ${MIX_NPZ}"
+echo "N_PER_BRANCH   = ${N_PER_BRANCH}"
 echo "RUN_PATH       = ${RUN_PATH}"
 echo "DEVICE         = ${DEVICE}"
 echo "CONDA_ENV_NAME = ${CONDA_ENV_NAME:-cpl (default)}"
@@ -103,10 +107,11 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "$RUN_PATH"
 
-if [[ ! -f "$CONCAT_NPZ" ]]; then
-    echo "Concatenating branches -> ${CONCAT_NPZ}"
-    python3 "${REPO_ROOT}/scripts/concat_cum_estop_branches.py" \
-        --stop-correction "$STOP_NPZ" --no-stop-demo "$DEMO_NPZ" --output "$CONCAT_NPZ"
+if [[ ! -f "$MIX_NPZ" ]]; then
+    echo "Building mix -> ${MIX_NPZ}"
+    python3 "${REPO_ROOT}/scripts/build_cum_estop_mix.py" \
+        --stop-correction "$STOP_NPZ" --no-stop-demo "$DEMO_NPZ" \
+        --n-per-branch "$N_PER_BRANCH" --seed "$MIX_SEED" --output "$MIX_NPZ"
 fi
 
 if [[ "$DEVICE" == "cuda" ]]; then
@@ -133,7 +138,7 @@ python3 "${REPO_ROOT}/scripts/train.py" \
     --seed "$SEED" \
     --device "$DEVICE" \
     --set "eval_env=${ENV_NAME}" \
-    --set "dataset_kwargs.path=${CONCAT_NPZ}" \
+    --set "dataset_kwargs.path=${MIX_NPZ}" \
     "${EXTRA_SETS[@]+"${EXTRA_SETS[@]}"}"
 
 touch "${RUN_PATH}/training_complete"

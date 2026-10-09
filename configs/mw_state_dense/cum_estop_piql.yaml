@@ -34,17 +34,15 @@ checkpoint: null
 
 eval_env: mw_drawer-open-v2
 
-# Cumulative E-stop model (cumulative_estop_model.md), both branches
-# concatenated into one flat file by scripts/concat_cum_estop_branches.py --
-# PIQL has no component-weighted mixing mechanism (unlike MixedCPL), so
-# standalone PIQL training here uses natural-frequency weighting across the
-# two branches rather than the lambda=0.5 equal-branch weighting CPL gets.
-# Both arms are full, equal-length T-step trajectories (no padding/masking
-# needed), so plain DemoPIQL + CorrBuffer applies unmodified -- see
-# configs/mw_state_dense/corr_piql.yaml for the same pattern on corr data.
+# Cumulative E-stop model (cumulative_estop_model.md), trained on the same
+# pre-shuffled 50/50 mix file as cum_estop_cpl.yaml (built by
+# scripts/build_cum_estop_mix.py). Both arms are full, equal-length T-step
+# trajectories (no padding/masking needed), so plain DemoPIQL + CorrBuffer
+# applies unmodified -- see configs/mw_state_dense/corr_piql.yaml for the
+# same pattern on corr data.
 dataset: CorrBuffer
 dataset_kwargs:
-  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_concat.npz
+  path: datasets/cum_estop_labels/mw_drawer-open-v2/cum_estop_mix10k.npz
   batch_size: 96
   segment_length: null
   reward_scale: 1.0

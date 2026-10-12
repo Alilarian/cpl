@@ -4,7 +4,7 @@ from .cpl import CPL, CreditAssignmentCPL, DemoCPL, EstopHoldCPL
 from .cpl_kl import CPL_KL
 from .cum_estop_cpl import DiscountedCorrCPL
 from .mixed_cpl import MixedCPL
-from .piql import PIQL, CreditAssignmentPIQL, DemoPIQL, EstopHoldPIQL
+from .piql import PIQL, CreditAssignmentPIQL, DemoPIQL, EstopHoldPIQL, MixedPIQL
 from .pm_cpl import PointMassCPL, PointMassCreditAssignmentCPL, PointMassDemoCPL
 from .reward_cpl import RewardCPL, RewardCreditCPL, RewardEstopHoldCPL
 from .sac import SAC

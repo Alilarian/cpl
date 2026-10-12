@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from research.networks.base import ActorCriticValueRewardPolicy
 
-from .cpl import demo_cross_entropy
+from .cpl import biased_choice_cross_entropy, demo_cross_entropy
 from .off_policy_algorithm import OffPolicyAlgorithm
 
 
@@ -121,14 +121,33 @@ class PIQL(OffPolicyAlgorithm):
             with torch.no_grad():
                 reward = self.network.reward(obs, action).mean(dim=0)
 
-        # Encode everything
+        metrics = self._iql_update(*self._to_transitions(obs, action, discount, reward), step)
+
+        if step < self.reward_steps:
+            metrics["reward_loss"] = reward_loss.item()
+            metrics["reward_accuracy"] = reward_accuracy.item()
+
+        return metrics
+
+    def _to_transitions(self, obs, action, discount, reward):
+        """
+        Encodes (N, T, ...) sequences and shifts them into (N, T-1, ...)
+        (obs, next_obs, action, discount, reward) transitions for _iql_update.
+        """
         obs = self.network.encoder(obs)
         next_obs = obs[:, 1:].detach()
         obs = obs[:, :-1]
         action = action[:, :-1]
         discount = discount[:, :-1]
         reward = reward[:, :-1]
+        return obs, next_obs, action, discount, reward
 
+    def _iql_update(self, obs, next_obs, action, discount, reward, step: int) -> Dict:
+        """
+        One value/actor/critic/target update. Every input shares the same
+        leading batch dims -- (N, T-1) from _to_transitions, or a flat (M,) of
+        transitions pooled across segments of different lengths (MixedPIQL).
+        """
         with torch.no_grad():
             target_q = self.target_network.critic(obs, action)
             target_q = torch.min(target_q, dim=0)[0]
@@ -183,10 +202,6 @@ class PIQL(OffPolicyAlgorithm):
             adv=adv.mean().item(),
             reward=reward.mean().item(),
         )
-
-        if step < self.reward_steps:
-            metrics["reward_loss"] = reward_loss.item()
-            metrics["reward_accuracy"] = reward_accuracy.item()
 
         # Update the networks. These are done in a stack to support different grad options for the encoder.
         if step % self.target_freq == 0:
@@ -361,3 +376,110 @@ class EstopHoldPIQL(PIQL):
         with torch.no_grad():
             accuracy = (logit > 0).float().mean()
         return loss, accuracy
+
+
+class MixedPIQL(PIQL):
+    """
+    P-IQL trained jointly on a mix of feedback types -- the PIQL sibling of
+    MixedCPL (research/algs/mixed_cpl.py), consuming the same named sub-batches
+    from research.datasets.mixed_buffer.MixedFeedbackBuffer:
+
+        {"credit_assignment": {"obs": (B1, K1, T1, ...), "action": ..., "label": (B1,)},
+         "demo":              {"obs": (B2, K2, T2, ...), "action": ..., "label": (B2,)}}
+
+    Reward net: each component is scored exactly as its single-type PIQL
+    sibling scores it (summed per-step reward -> (B, K) -> biased_choice_cross_entropy
+    against `label`; identical to CreditAssignmentPIQL for credit_assignment
+    and to DemoPIQL for demo/pref/corr/scalar), and the per-component losses
+    are combined as a fixed-weight sum via `component_weights`, the same
+    convention MixedCPL uses. Any component not listed defaults to weight 1.0.
+
+    Value/actor/critic: every component's segments are shifted into (s, a, r,
+    s') transitions with the flat `transition_discount`, then flattened and
+    pooled into one IQL update. Flattening (rather than stacking) is needed
+    because components differ in T (credit 20, demo/pref/corr 64, scalar 16).
+
+    Repeat-padded components only -- zero-padded ones carrying a "horizon"
+    field (EstopHoldBuffer) are rejected, since their padded tail would leak
+    synthetic transitions into the IQL update (see EstopHoldPIQL).
+    """
+
+    def __init__(
+        self,
+        *args,
+        contrastive_bias: float = 1.0,
+        transition_discount: float = 0.99,
+        component_weights: Optional[Dict[str, float]] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        assert contrastive_bias > 0.0 and contrastive_bias <= 1.0
+        self.contrastive_bias = contrastive_bias
+        self.transition_discount = transition_discount
+        self.component_weights = {} if component_weights is None else dict(component_weights)
+
+    def _get_component_sequences(self, name: str, sub_batch: Dict):
+        assert "horizon" not in sub_batch, f"component '{name}': zero-padded components are not supported."
+        B, K, T, _ = sub_batch["obs"].shape
+        obs = sub_batch["obs"].reshape(B * K, T, -1)
+        action = sub_batch["action"].reshape(B * K, T, -1)
+        discount = self.transition_discount * torch.ones(B * K, T, device=obs.device, dtype=obs.dtype)
+        return obs, action, discount
+
+    def _get_component_reward_loss(self, reward: torch.Tensor, sub_batch: Dict):
+        B, K, _, _ = sub_batch["obs"].shape
+        seg_adv = reward.mean(dim=0).sum(dim=-1).reshape(B, K)
+        return biased_choice_cross_entropy(seg_adv, sub_batch["label"].long(), bias=self.contrastive_bias)
+
+    def _get_mixed_reward_loss(self, rewards: Dict[str, torch.Tensor], batch: Dict[str, Dict]):
+        total_loss = 0.0
+        logs = {}
+        for name, sub_batch in batch.items():
+            loss_i, accuracy_i = self._get_component_reward_loss(rewards[name], sub_batch)
+            total_loss = total_loss + self.component_weights.get(name, 1.0) * loss_i
+            logs[f"{name}_reward_loss"] = loss_i.item()
+            logs[f"{name}_reward_accuracy"] = accuracy_i.item()
+        return total_loss, logs
+
+    def train_step(self, batch: Dict[str, Dict], step: int, total_steps: int) -> Dict:
+        assert isinstance(batch, dict), "MixedPIQL requires a MixedFeedbackBuffer batch."
+        sequences = {name: self._get_component_sequences(name, sub_batch) for name, sub_batch in batch.items()}
+
+        if step < self.reward_steps:
+            self.network.reward.train()
+            rewards = {name: self.network.reward(obs, action) for name, (obs, action, _) in sequences.items()}
+            reward_loss, reward_logs = self._get_mixed_reward_loss(rewards, batch)
+
+            self.optim["reward"].zero_grad(set_to_none=True)
+            reward_loss.backward()
+            self.optim["reward"].step()
+
+            rewards = {name: reward.detach().mean(dim=0) for name, reward in rewards.items()}
+        else:
+            with torch.no_grad():
+                rewards = {
+                    name: self.network.reward(obs, action).mean(dim=0) for name, (obs, action, _) in sequences.items()
+                }
+
+        # Shift each component into (N, T-1, ...) transitions, then flatten and pool across components.
+        transitions = [
+            self._to_transitions(obs, action, discount, rewards[name])
+            for name, (obs, action, discount) in sequences.items()
+        ]
+        pooled = [torch.cat([t.flatten(0, 1) for t in field], dim=0) for field in zip(*transitions)]
+        metrics = self._iql_update(*pooled, step)
+
+        if step < self.reward_steps:
+            metrics["reward_loss"] = reward_loss.item()
+            metrics.update(reward_logs)
+
+        return metrics
+
+    def validation_step(self, batch: Dict[str, Dict]) -> Dict:
+        with torch.no_grad():
+            rewards = {}
+            for name, sub_batch in batch.items():
+                obs, action, _ = self._get_component_sequences(name, sub_batch)
+                rewards[name] = self.network.reward(obs, action)
+            reward_loss, logs = self._get_mixed_reward_loss(rewards, batch)
+        return dict(reward_loss=reward_loss.item(), **logs)

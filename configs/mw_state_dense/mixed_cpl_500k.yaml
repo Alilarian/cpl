@@ -1,0 +1,21 @@
+# mixed_cpl.yaml at 500k steps -- the base for the mixed_cpl_all manifest, so
+# CPL and PIQL (mixed_piql.yaml) run the same step budget. A separate file
+# rather than an edit to mixed_cpl.yaml, which the estop/cum_estop mixed
+# manifests also import at 250k.
+#
+# Config.load's import merge is shallow, so trainer_kwargs is restated in full
+# here (a partial block would drop train_dataloader_kwargs).
+import: configs/mw_state_dense/mixed_cpl.yaml
+
+trainer_kwargs:
+  total_steps: 500000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 25
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null

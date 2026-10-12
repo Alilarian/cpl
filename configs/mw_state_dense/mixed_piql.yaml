@@ -1,0 +1,70 @@
+
+alg: MixedPIQL
+alg_kwargs:
+  beta: 0.3333
+  expectile: 0.7
+  reward_steps: 50000
+  contrastive_bias: 1.0     # unbiased, same as every single-type *_piql.yaml
+  transition_discount: 0.99 # no buffer in the mix carries a discount field
+  component_weights: {}     # per-run override: {<base>: 1.0, <secondary>: 0.1}
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+
+network: ActorCriticValueRewardPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    dropout: 0.25 # only actor gets dropout sometimes.
+    output_act: ["import", "torch.nn", "Tanh"]
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2
+  value_class: MLPValue
+  value_kwargs:
+    ensemble_size: 1
+  reward_class: ContinuousMLPCritic
+  reward_kwargs:
+    ensemble_size: 1
+  act: ["import", "torch.nn", "ReLU"]
+  hidden_layers: [512, 512]
+  ortho_init: True
+
+checkpoint: null
+
+eval_env: mw_drawer-open-v2
+
+# components filled in per-run by scripts/generate_mixed_cpl_manifest.py --alg piql
+# -- same components (and subsample rows) as the mixed_cpl_all manifest; see
+# research/datasets/mixed_buffer.py for the shared (obs, action, label) contract.
+dataset: MixedFeedbackBuffer
+dataset_kwargs:
+  batch_size: 96
+  components: []
+
+schedule:
+  actor: ["import", "torch.optim.lr_scheduler", "CosineAnnealingLR"]
+schedule_kwargs:
+  actor:
+    T_max: 500000
+
+processor: null
+
+trainer_kwargs: # Arguments given to Algorithm.train
+  # total_steps here is the source of truth for the mixed_piql_all manifest --
+  # per-run configs never override trainer_kwargs (Config.load's import merge is
+  # shallow, so a partial override would drop train_dataloader_kwargs below).
+  total_steps: 500000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 25
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

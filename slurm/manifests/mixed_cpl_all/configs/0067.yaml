@@ -1,4 +1,4 @@
-import: configs/mw_state_dense/mixed_cpl.yaml
+import: configs/mw_state_dense/mixed_cpl_500k.yaml
 eval_env: mw_drawer-open-v2
 seed: 0
 alg_kwargs:

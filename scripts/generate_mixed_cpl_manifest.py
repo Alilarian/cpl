@@ -12,7 +12,14 @@ sbatch script needed:
     sbatch --array=1-72 --account=<acct> --partition=<part> \\
         slurm/train_array.sbatch slurm/manifests/mixed_cpl_all/manifest.tsv
 
-Each generated config imports configs/mw_state_dense/mixed_cpl.yaml and fills
+`--alg piql` writes the PIQL sibling (MixedPIQL, research/algs/piql.py) to
+slurm/manifests/mixed_piql_all/ instead: the exact same components and
+subsample rows, importing configs/mw_state_dense/mixed_piql.yaml (also 500k
+steps), with run
+paths ending in piql_s<seed> next to the CPL runs' cpl_s<seed>.
+
+Each generated config imports configs/mw_state_dense/mixed_cpl_500k.yaml
+(mixed_cpl.yaml at 500k steps) and fills
 in `dataset_kwargs.components` (see research/datasets/mixed_buffer.py) and
 `alg_kwargs.component_weights` (see research/algs/mixed_cpl.py).
 
@@ -39,6 +46,7 @@ on every *+demo run). Kept as top-of-file constants so a further path fix on
 CHPC doesn't require touching the mixing logic below.
 """
 
+import argparse
 import os
 
 import yaml
@@ -62,8 +70,21 @@ BATCH_SIZE = 96
 ALPHA = 0.1
 CONTRASTIVE_BIAS = 0.75
 BC_STEPS, BC_COEFF = 0, 0.0
-# total_steps is NOT set here -- it lives solely in
-# configs/mw_state_dense/mixed_cpl.yaml's trainer_kwargs (currently 250000).
+# Both bases run 500k steps (trainer_kwargs lives only there -- see build_config()).
+BASE_CONFIG = {
+    "cpl": "configs/mw_state_dense/mixed_cpl_500k.yaml",
+    "piql": "configs/mw_state_dense/mixed_piql.yaml",
+}
+# PIQL alg_kwargs -- same values as every single-type configs/mw_state_dense/*_piql.yaml.
+PIQL_ALG_KWARGS = {
+    "beta": 0.3333,
+    "expectile": 0.7,
+    "reward_steps": 50000,
+    "contrastive_bias": 1.0,
+    "transition_discount": 0.99,
+}
+# total_steps is NOT set here -- it lives solely in the BASE_CONFIG yaml's
+# trainer_kwargs (500000 for both mixed_cpl_500k.yaml and mixed_piql.yaml).
 # See build_config()'s docstring note for why per-run configs must never
 # override trainer_kwargs at all.
 
@@ -113,12 +134,12 @@ def component(name: str, weight: float, subsample_n: int, env: str) -> dict:
     }
 
 
-def build_config(base: str, secondary: str, env: str, seed: int) -> dict:
+def build_config(base: str, secondary: str, env: str, seed: int, alg: str = "cpl") -> dict:
     """
     IMPORTANT: Config.load's `import` merge (research/utils/config.py's
     BareConfig.update) is a SHALLOW dict.update() -- overriding a top-level
     key here (e.g. "alg_kwargs") REPLACES that whole nested dict from the
-    imported mixed_cpl.yaml, it does not merge into it. Concretely: an
+    imported base yaml, it does not merge into it. Concretely: an
     earlier version of this function only set alg_kwargs.contrastive_bias/
     component_weights, which silently dropped alg_kwargs.alpha (falling back
     to CPL's own default alpha=1.0 instead of the intended 0.1) -- and a
@@ -127,20 +148,25 @@ def build_config(base: str, secondary: str, env: str, seed: int) -> dict:
     auto-collation and caused every batch to arrive with a spurious extra
     leading axis (observed as "expected 4D ... got (1, 86, 45, 20, 35)").
     The fix: never override trainer_kwargs at all here (total_steps lives
-    solely in mixed_cpl.yaml), and always restate every alg_kwargs field
+    solely in the BASE_CONFIG yaml), and always restate every alg_kwargs field
     explicitly rather than only the ones that vary per run.
     """
-    return {
-        "import": "configs/mw_state_dense/mixed_cpl.yaml",
-        "eval_env": env,
-        "seed": seed,
-        "alg_kwargs": {
+    component_weights = {base: 1.0, secondary: SECONDARY_WEIGHT}
+    if alg == "cpl":
+        alg_kwargs = {
             "alpha": ALPHA,
             "contrastive_bias": CONTRASTIVE_BIAS,
             "bc_steps": BC_STEPS,
             "bc_coeff": BC_COEFF,
-            "component_weights": {base: 1.0, secondary: SECONDARY_WEIGHT},
-        },
+            "component_weights": component_weights,
+        }
+    else:
+        alg_kwargs = {**PIQL_ALG_KWARGS, "component_weights": component_weights}
+    return {
+        "import": BASE_CONFIG[alg],
+        "eval_env": env,
+        "seed": seed,
+        "alg_kwargs": alg_kwargs,
         "dataset_kwargs": {
             "batch_size": BATCH_SIZE,
             "components": [
@@ -151,12 +177,17 @@ def build_config(base: str, secondary: str, env: str, seed: int) -> dict:
     }
 
 
-def run_path(base: str, secondary: str, env: str, seed: int) -> str:
-    return f"runs/mw_b10k_mixed/{env}/{base}+{secondary}_10pct/cpl_s{seed}"
+def run_path(base: str, secondary: str, env: str, seed: int, alg: str = "cpl") -> str:
+    return f"runs/mw_b10k_mixed/{env}/{base}+{secondary}_10pct/{alg}_s{seed}"
 
 
 def main():
-    manifest_dir = os.path.join(REPO_ROOT, "slurm", "manifests", "mixed_cpl_all")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--alg", choices=["cpl", "piql"], default="cpl")
+    alg = parser.parse_args().alg
+
+    manifest_name = f"mixed_{alg}_all"
+    manifest_dir = os.path.join(REPO_ROOT, "slurm", "manifests", manifest_name)
     configs_dir = os.path.join(manifest_dir, "configs")
     os.makedirs(configs_dir, exist_ok=True)
 
@@ -167,11 +198,11 @@ def main():
             for env in ENVS:
                 for seed in SEEDS:
                     task_id += 1
-                    config = build_config(base, secondary, env, seed)
-                    config_rel = f"slurm/manifests/mixed_cpl_all/configs/{task_id:04d}.yaml"
+                    config = build_config(base, secondary, env, seed, alg)
+                    config_rel = f"slurm/manifests/{manifest_name}/configs/{task_id:04d}.yaml"
                     with open(os.path.join(REPO_ROOT, config_rel), "w") as f:
                         yaml.dump(config, f, sort_keys=False)
-                    rows.append(f"{config_rel}\t{run_path(base, secondary, env, seed)}")
+                    rows.append(f"{config_rel}\t{run_path(base, secondary, env, seed, alg)}")
 
     manifest_path = os.path.join(manifest_dir, "manifest.tsv")
     with open(manifest_path, "w") as f:

@@ -1,0 +1,11 @@
+import: configs/rrc_sac/base.yaml
+type: cum_estop
+data:
+  file: "{cum_estop_dir}/cum_estop_mix10000.npz"   # ARIC: DiscountedCorrCPL / CorrBuffer, K=2 full arms
+  subsample_n: null                                 # the whole 5k + 5k mix, as ARIC trains on it
+  # no-stop rows: the preferred arm is the accepted ORIGINAL (the arm that is a full pool
+  # trajectory). generate_cum_estop_labels.py stacks no-stop rows as [counterfactual, original],
+  # so ARIC's "index 0 preferred" reading flips them; "as_stored" reproduces ARIC's reading.
+  nostop_preferred: original
+rrc:
+  gamma: 0.99

@@ -1,0 +1,7 @@
+# Overlay for the local machine: label/pool/oracle mirrors under datasets/ (cum_estop is CHPC-only).
+paths:
+  labels_dir: datasets/mw_de_labels/{task}
+  cum_estop_dir: datasets/cum_estop_labels/{task}
+  pool_path: datasets/mw_de_labels/{task}/pool.npz
+  oracle_dir: datasets/mw_de_labels/{task}/oracle
+  repo_dir: .

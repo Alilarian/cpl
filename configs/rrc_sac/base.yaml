@@ -1,0 +1,53 @@
+# Shared defaults for RRC reward-model training (docs/rrc_sac_plan.md).
+# {task} and {<paths key>} placeholders are filled per task by research/reward_learning/data.py::resolve.
+paths:
+  labels_dir: /scratch/general/vast/u1472210/mw_de_labels/{task}
+  cum_estop_dir: /scratch/general/vast/u1472210/cum_estop_labels/{task}
+  pool_path: /scratch/general/vast/u1472210/mw_de_pool/{task}/pool.npz
+  oracle_dir: /scratch/general/vast/u1472210/oracle_sac_1m/{task}
+  oracle_ckpt: best_model.pt
+  # Candidate critics for the label-consistency check, "run_dir:ckpt". The labeler is the
+  # candidate whose recomputed scores best match the stored adv_scores (demo matches
+  # oracle_sac_1m exactly; pref/corr/scalar/credit predate the switch to it, 2026-09-21).
+  repo_dir: /uufs/chpc.utah.edu/common/home/u1472210/cpl
+  label_oracle_candidates:
+    - "{oracle_dir}:best_model.pt"
+    - "{repo_dir}/runs/runs/chpc/oracle_sac_seeds/{task}/seed-1:best_model.pt"
+    - "{repo_dir}/runs/runs/chpc/oracle_sac_seeds/{task}/seed-0:best_model.pt"
+    - "{repo_dir}/runs/runs/chpc/oracle_sac_all/{task}:best_model.pt"
+  runs_root: runs/rrc_sac
+  offdist_cache: "{runs_root}/_cache/{task}/offdist.npz"
+
+data:
+  expected_episodes: 200     # pool = 200 deterministic episodes per task (asserted)
+  val_frac: 0.1              # held-out acts, split by source episode
+  split_seed: 0              # one split for all members and all seeds
+  action_eps: 1.0e-5         # ARIC buffers clip actions to +-(1 - eps)
+  subsample_n: 10000         # ARIC's 10k rows ...
+  subsample_seed: 0          # ... drawn exactly as CorrBuffer/DemoBuffer(subsample_n, subsample_seed)
+
+rrc:
+  beta: 1.0
+
+model:
+  ensemble_size: 3
+  hidden_layers: [256, 256, 256]
+  output: tanh               # "linear" for the ablation
+
+train:
+  lr: 3.0e-4
+  weight_decay: 0.0
+  batch_acts: 128
+  grad_clip: 1.0             # per member
+  max_epochs: 200
+  patience: 10
+  save_every: 25
+  pilot_max_epochs: 600      # pilot runs: `best` frozen at the early-stop point, training continues to 3 x ensemble-best epoch (cap)
+
+diagnostics:
+  label_consistency_train_acts: 1000
+  cum_estop_consistency_acts: 200
+  mcmc_samples: 64           # same V(s) estimator as the label generators
+  saturation_threshold: 0.95
+  offdist_random_episodes: 50
+  offdist_episodes_per_ckpt: 20

@@ -1,0 +1,74 @@
+# Verbatim copy of the Meta-World oracle SAC config (datasets/mw_de_labels/<env>/oracle/config.yaml,
+# live: /scratch/general/vast/u1472210/oracle_sac_1m/<env>/config.yaml), identical across all 4 tasks
+# except env. Only env is templated; scripts/train_rrc_sac.py fills {task} and asserts this file
+# equals the task's oracle config (env/seed/checkpoint ignored). Do not edit per reward model.
+alg: SAC
+alg_kwargs:
+  actor_freq: 1
+  bc_steps: 0
+  critic_freq: 1
+  init_temperature: 0.1
+  random_steps: 25000
+  target_freq: 2
+  tau: 0.005
+checkpoint: null
+dataset: ReplayBuffer
+dataset_kwargs:
+  capacity: 1200000
+  distributed: false
+  fetch_every: 1000
+  path: null
+  sample_fn: sample_qlearning
+  sample_kwargs:
+    batch_size: 512
+    discount: 0.99
+    nstep: 1
+    sample_by_timesteps: false
+env: "{task}"
+env_kwargs:
+  sparse: false
+eval_env: null
+eval_env_kwargs: {}
+network: ActorCriticPolicy
+network_kwargs:
+  actor_class: DiagonalGaussianMLPActor
+  actor_kwargs:
+    log_std_bounds:
+    - -5
+    - 2
+    output_act: null
+    squash_normal: true
+  critic_class: ContinuousMLPCritic
+  critic_kwargs:
+    ensemble_size: 2
+  hidden_layers:
+  - 256
+  - 256
+  - 256
+  ortho_init: true
+optim: Adam
+optim_kwargs:
+  lr: 0.0003
+processor: null
+processor_kwargs: {}
+schedule: null
+schedule_kwargs: {}
+seed: 0
+trainer_kwargs:
+  checkpoint_freq: 20000
+  env_runner: AsyncEnv
+  eval_fn: eval_policy
+  eval_freq: 10000
+  eval_kwargs:
+    num_ep: 20
+  log_freq: 250
+  loss_metric: reward
+  profile_freq: 100
+  total_steps: 1000000
+  train_dataloader_kwargs:
+    batch_size: null
+    num_workers: 0
+validation_dataset: null
+validation_dataset_kwargs: null
+wrapper: null
+wrapper_kwargs: {}

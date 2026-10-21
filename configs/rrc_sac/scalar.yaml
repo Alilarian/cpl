@@ -1,0 +1,7 @@
+import: configs/rrc_sac/base.yaml
+type: scalar
+data:
+  file: "{labels_dir}/scalar_labels.npz"   # ARIC: DemoCPL / CorrBuffer, K=2 16-step subsegments, idx0 preferred
+  act_group: row                           # one ARIC row = one act; "traj_id" averages a trajectory's pairs
+rrc:
+  gamma: 1.0

@@ -1,0 +1,6 @@
+import: configs/rrc_sac/base.yaml
+type: pref
+data:
+  file: "{labels_dir}/pref_labels.npz"   # ARIC: DemoCPL / CorrBuffer, K=2, idx0 preferred
+rrc:
+  gamma: 1.0

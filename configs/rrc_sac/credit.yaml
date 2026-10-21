@@ -1,0 +1,6 @@
+import: configs/rrc_sac/base.yaml
+type: credit
+data:
+  file: "{labels_dir}/credit_labels.npz"   # ARIC: CreditAssignmentCPL, 45 windows of 20 steps, chosen_idx
+rrc:
+  gamma: 1.0

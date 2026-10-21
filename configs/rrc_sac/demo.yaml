@@ -1,0 +1,6 @@
+import: configs/rrc_sac/base.yaml
+type: demo
+data:
+  file: "{labels_dir}/demo_labels_K9.npz"   # ARIC: DemoCPL / DemoBuffer, K=9, expert at idx0
+rrc:
+  gamma: 1.0

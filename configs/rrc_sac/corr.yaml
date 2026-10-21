@@ -1,0 +1,6 @@
+import: configs/rrc_sac/base.yaml
+type: corr
+data:
+  file: "{labels_dir}/corr_labels.npz"   # ARIC: DemoCPL / CorrBuffer, K=2 {correction, original}, idx0 winner
+rrc:
+  gamma: 1.0

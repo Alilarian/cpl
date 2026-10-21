@@ -158,7 +158,7 @@ def _state_copy(net: torch.nn.Module) -> Dict[str, torch.Tensor]:
 
 
 def train_reward_ensemble(cs: ChoiceSet, split: Dict, cfg: Dict, out_dir: str, seed: int, device: str = "cpu",
-                          pilot: bool = False, log=print) -> Dict:
+                          pilot: bool = False, log=print, epoch_callback=None) -> Dict:
     os.makedirs(out_dir, exist_ok=True)
     device = torch.device(device)
     mcfg, tcfg = cfg["model"], cfg["train"]
@@ -200,6 +200,8 @@ def train_reward_ensemble(cs: ChoiceSet, split: Dict, cfg: Dict, out_dir: str, s
         for m in range(E):
             row[f"grad_norm_m{m}"] = float(grad_norms[m]) if grad_norms is not None else float("nan")
         rows_csv.append(row)
+        if epoch_callback is not None:
+            epoch_callback(row)  # e.g. WandB logging; one call per epoch, epoch 0 = before training
         return va
 
     va = log_epoch(0, None, 0.0)

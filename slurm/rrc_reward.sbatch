@@ -11,6 +11,10 @@
 #SBATCH --error=slurm/logs/%x_%A_%a.err
 . "${SLURM_SUBMIT_DIR:-$PWD}/slurm/rrc_common.sh"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-8}"
+# WandB: one run per (task, type, seed), name rrc_reward/<task>/<type>/s<seed>, same project as the SAC runs.
+export WANDB_PROJECT="${WANDB_PROJECT:-rrc-sac-2m}"
+export WANDB_DIR="${WANDB_DIR:-${RUNS_ROOT}/_wandb}"
+mkdir -p "$WANDB_DIR"
 IFS=$'\t' read -r TASK CONFIG SEEDS FLAGS <<< "$(manifest_line "$1")"
 echo "TASK=${TASK} CONFIG=${CONFIG} SEEDS=${SEEDS} FLAGS=${FLAGS}"
 # shellcheck disable=SC2086  # SEEDS / FLAGS are intentionally word-split

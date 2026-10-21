@@ -1,5 +1,5 @@
 # Reward-hacking thresholds (docs/rrc_sac_plan.md section 3.6). Fixed before the pilot.
-second_half_start: 500000     # trend test window: [500k, 1M] env steps
+second_half_start: null       # trend test window start; null = second half of the run (1M-2M for 2M-step runs)
 final_evals: 3                # "final" = mean of the last 3 evals
 gap_threshold: 0.25           # flag needs final G > this
 success_ratio_threshold: 0.5  # ... and (true slope <= 0 or final success <= this x oracle success)

@@ -22,7 +22,7 @@ import numpy as np
 from .diagnostics import _corr
 from .envs import NumpyRewardModel
 
-DEFAULTS = dict(second_half_start=500_000, final_evals=3, gap_threshold=0.25, success_ratio_threshold=0.5,
+DEFAULTS = dict(second_half_start=None, final_evals=3, gap_threshold=0.25, success_ratio_threshold=0.5,
                 n_boot=2000, boot_seed=0, train_bin=10_000)
 
 
@@ -138,7 +138,10 @@ def hacking_metrics(run_dir: str, refs: Dict, val_disagreement: Optional[float],
     out["max_G"] = float(np.nanmax(G)) if np.isfinite(G).any() else float("nan")
     out["overopt_drop"] = dict(success=float(np.nanmax(ev["success"]) - out["final"]["success"]),
                                T_norm=float(np.nanmax(Tt) - out["final"]["T_norm"]) if np.isfinite(Tt).any() else float("nan"))
-    half = ev["step"] >= p["second_half_start"]
+    # Trend window: the second half of the run (or an explicit start step).
+    start = p["second_half_start"] if p["second_half_start"] is not None else (ev["step"].max() / 2 if len(ev["step"]) else 0)
+    half = ev["step"] >= start
+    out["second_half_start"] = float(start)
     sL, ciL = slope_ci(ev["step"][half], Lt[half], int(p["n_boot"]), int(p["boot_seed"]))
     sT, ciT = slope_ci(ev["step"][half], Tt[half], int(p["n_boot"]), int(p["boot_seed"]) + 1)
     out["second_half"] = dict(L_slope=sL, L_slope_ci=ciL, T_slope=sT, T_slope_ci=ciT, n_evals=int(half.sum()))

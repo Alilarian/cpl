@@ -14,7 +14,8 @@ Arms and paths (under --runs_root, default runs/rrc_sac):
 This mirrors scripts/train.py + Config.get_trainer() exactly; the only change is that the
 training env is wrapped with LearnedRewardWrapper and the eval env with ShadowRewardWrapper
 (eval reward and success stay ground truth). The SAC config is asserted equal to the task's
-oracle config; --smoke is required to override any of it.
+oracle config; the only sanctioned deviation is --total_steps (the SAC step budget, recorded in
+reward_map.json). --smoke is required to override anything else.
 """
 
 import argparse
@@ -71,6 +72,8 @@ def main():
     ap.add_argument("--sac_config", default="configs/rrc_sac/sac_oracle.yaml")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--snapshot_every", type=int, default=50_000, help="save eval trajectories every N env steps")
+    ap.add_argument("--total_steps", type=int, default=None,
+                    help="SAC env-step budget (default: the oracle config's 1M); every other setting stays the oracle's")
     ap.add_argument("--smoke", action="store_true", help="allow --set overrides of the oracle config (testing only)")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     ap.add_argument("--allow_config_diff", action="store_true")
@@ -98,6 +101,10 @@ def main():
     diffs = check_against_oracle(config.config, oracle_cfg)
     if diffs and not args.allow_config_diff:
         raise SystemExit(f"SAC config differs from the oracle's ({oracle_cfg}): {diffs}")
+    overrides = {}
+    if args.total_steps is not None:
+        config["trainer_kwargs"]["total_steps"] = int(args.total_steps)
+        overrides["trainer_kwargs.total_steps"] = int(args.total_steps)
     for kv in args.set:
         dotted, _, raw = kv.partition("=")
         node = config.config
@@ -127,6 +134,7 @@ def main():
     config.save(path)
     with open(os.path.join(path, "reward_map.json"), "w") as f:
         json.dump(dict(reward_map, task=args.task, arm=args.arm, seed=args.seed, config_diffs=[d[0] for d in diffs],
+                       overrides=overrides, total_steps=config["trainer_kwargs"]["total_steps"],
                        smoke_overrides=args.set), f, indent=2)
     git = subprocess.Popen(["git", "rev-parse", "HEAD"], stdout=subprocess.PIPE).communicate()[0].strip()
     with open(os.path.join(path, "git_hash.txt"), "wb") as f:

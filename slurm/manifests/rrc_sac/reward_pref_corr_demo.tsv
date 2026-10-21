@@ -1,10 +1,9 @@
 mw_button-press-v2	configs/rrc_sac/pref.yaml	0 1 2	
 mw_button-press-v2	configs/rrc_sac/corr.yaml	0 1 2	
 mw_button-press-v2	configs/rrc_sac/demo.yaml	0 1 2	
-mw_door-open-v2	configs/rrc_sac/pref.yaml	0 1 2	--pilot
-mw_door-open-v2	configs/rrc_sac/corr.yaml	0 1 2	--pilot
-mw_door-open-v2	configs/rrc_sac/demo.yaml	0 1 2	--pilot
-mw_door-open-v2	configs/rrc_sac/pref.yaml	0 1 2	--untrained
+mw_door-open-v2	configs/rrc_sac/pref.yaml	0 1 2	
+mw_door-open-v2	configs/rrc_sac/corr.yaml	0 1 2	
+mw_door-open-v2	configs/rrc_sac/demo.yaml	0 1 2	
 mw_drawer-open-v2	configs/rrc_sac/pref.yaml	0 1 2	
 mw_drawer-open-v2	configs/rrc_sac/corr.yaml	0 1 2	
 mw_drawer-open-v2	configs/rrc_sac/demo.yaml	0 1 2	

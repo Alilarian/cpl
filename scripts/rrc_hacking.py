@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--rrc_config", default="configs/rrc_sac/base.yaml")
     ap.add_argument("--overlay", nargs="*", default=[])
     ap.add_argument("--params", default="configs/rrc_sac/hacking.yaml")
+    ap.add_argument("--run_dirs", nargs="*", default=None, help="only these SAC run dirs (<runs_root>/<task>/<arm>/seed<s>/sac*)")
     args = ap.parse_args()
 
     cfg = load_rrc_config(args.rrc_config, args.overlay)
@@ -50,9 +51,15 @@ def main():
     with open(args.params) as f:
         params = yaml.safe_load(f)
     tasks = args.tasks or sorted(d for d in os.listdir(args.runs_root) if not d.startswith("_"))
+    if args.run_dirs:
+        per_task = {}
+        for r in args.run_dirs:
+            per_task.setdefault(os.path.normpath(r).split(os.sep)[-4], []).append(os.path.join(r, "reward_map.json"))
+        tasks = sorted(per_task)
     for task in tasks:
         cache = resolve(cfg["paths"]["offdist_cache"], task, cfg)
-        for rm in sorted(glob.glob(os.path.join(args.runs_root, task, "*", "seed*", "sac*", "reward_map.json"))):
+        maps = per_task[task] if args.run_dirs else sorted(glob.glob(os.path.join(args.runs_root, task, "*", "seed*", "sac*", "reward_map.json")))
+        for rm in maps:
             run = os.path.dirname(rm)
             if not os.path.exists(os.path.join(run, "log.csv")):
                 continue

@@ -1,0 +1,59 @@
+alg: CreditAssignmentCPL
+alg_kwargs:
+  alpha: 0.1
+  contrastive_bias: 0.75   # downweight the non-chosen subsegments (same as other types)
+  bc_steps: 0             # no BC warmup
+  bc_coeff: 0.0
+
+optim: Adam
+optim_kwargs:
+  lr: 0.0001
+
+network: ActorPolicy
+network_kwargs:
+  actor_class: ContinuousMLPActor
+  actor_kwargs:
+    dropout: 0.25
+    output_act: ["import", "torch.nn", "Tanh"]
+    hidden_layers: [512, 512]
+    ortho_init: True
+
+checkpoint: null
+
+eval_env: mw_drawer-open-v2
+
+# scalar_window_labels.npz from scripts/generate_scalar_window_labels.py: one row
+# per window of W=3 non-overlapping 10-step subsegments, (N, 3, 10, obs_dim) +
+# chosen_idx. That is the credit-label layout, so CreditAssignmentCPL trains it
+# as a 3-way choice. Rows are grouped by segment (2 windows each, segments in
+# random order): set the budget with capacity (a prefix, keeps whole segments),
+# not subsample_n (draws rows independently and splits segments).
+dataset: PMCreditAssignmentBuffer
+dataset_kwargs:
+  path: datasets/mw_de_labels/mw_drawer-open-v2/scalar_window_labels.npz
+  batch_size: 32
+  capacity: 10000         # budget in labels = 5000 segments x 2 windows
+
+processor: null
+
+schedule:
+  actor: linear_warmup
+schedule_kwargs:
+  actor:
+    total_steps: 10000
+    multiplier: 1.0
+
+trainer_kwargs:
+  total_steps: 250000
+  log_freq: 500
+  profile_freq: 500
+  eval_freq: 5000
+  eval_fn: eval_policy
+  eval_kwargs:
+    num_ep: 25
+  loss_metric: reward
+  train_dataloader_kwargs:
+    num_workers: 0
+    batch_size: null
+
+seed: null

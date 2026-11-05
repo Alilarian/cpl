@@ -1,8 +1,8 @@
 #!/bin/bash
-# Train CPL on window-choice scalar feedback at the b10k budget.
+# Train CPL and PIQL on window-choice scalar feedback at the b10k budget.
 #
-# Same design as mw_b10k_credit_s11.sbatch (500k steps, same CPL settings and
-# WandB project); the label file and the budget draw differ:
+# Same design as mw_b10k_credit_s11.sbatch (500k steps, same configs-per-alg
+# settings and WandB projects); the label file and the budget draw differ:
 #   scalar_window_labels.npz -- from scripts/generate_scalar_window_labels.py.
 #   Each 64-step segment is rated every 10 steps (6 non-overlapping ratings);
 #   windows of 3 ratings slide by 1, and 2 random windows per segment are kept
@@ -13,16 +13,19 @@
 #   whole segments: 10k labels = 5000 random segments x 2 windows. The prefix
 #   is the same for every seed, so the seed sweep trains on identical data.
 #   subsample_n would draw rows independently and split segments.
+#   CPL uses scalar_window_cpl.yaml; PIQL uses credit_piql.yaml unchanged (same
+#   PMCreditAssignmentBuffer layout, multi-way cross-entropy reward loss).
 #
 # Runs are stored and logged as feedback type "scalar_window", next to the b10k
-# baselines:  runs/mw_b10k/<env>/scalar_window/cpl_s<seed>,
-# WandB run "<env>/scalar_window/cpl_s<seed>" in mw-cpl-b10k.
+# baselines:  runs/mw_b10k/<env>/scalar_window/<alg>_s<seed>,
+# WandB run "<env>/scalar_window/<alg>_s<seed>" in mw-cpl-b10k / mw-piql-b10k.
 #
-# Matrix: 4 envs x 3 seeds = 12 tasks
-#   env_idx  = (TASK_ID - 1) / 3   button-press, door-open, drawer-open, plate-slide
+# Matrix: 2 algs x 4 envs x 3 seeds = 24 tasks
+#   alg_idx  = (TASK_ID - 1) / 12        cpl 1-12, piql 13-24
+#   env_idx  = ((TASK_ID - 1) % 12) / 3  button-press, door-open, drawer-open, plate-slide
 #   seed_idx = (TASK_ID - 1) % 3
 #
-# Usage (from the repo root on CHPC):  bash slurm/submit_scalar_window.sh
+# Usage (from the repo root on CHPC):  bash slurm/submit_scalar_window.sh [cpl|piql|all]
 #
 # Resume: resubmit the same task; the trainer auto-resumes from final_model.pt,
 #   wandb continues via wandb_run_id.txt, and completed runs (training_complete
@@ -35,6 +38,7 @@
 #   RUNS_DIR           default: runs/mw_b10k
 #   CONFIG_DIR         default: configs/mw_state_dense
 #   CPL_WANDB_PROJECT  default: mw-cpl-b10k
+#   PIQL_WANDB_PROJECT default: mw-piql-b10k
 #   BUDGET             default: 10000  (labels; keep it a multiple of 2)
 #   TOTAL_STEPS        default: 500000
 #   DEVICE             default: cuda
@@ -52,7 +56,7 @@ set -euo pipefail
 mkdir -p "${SLURM_SUBMIT_DIR:-$PWD}/slurm/logs"
 
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    echo "ERROR: submit with --array=1-12 (or a sub-range)"
+    echo "ERROR: submit with --array=1-24 (or a sub-range)"
     exit 1
 fi
 
@@ -64,13 +68,14 @@ fi
 REPO_ROOT="$SUBMIT_DIR"
 
 # ── Matrix ────────────────────────────────────────────────────────────────────
+ALGS=(cpl piql)
 ENVS=(mw_button-press-v2 mw_door-open-v2 mw_drawer-open-v2 mw_plate-slide-v2)
 SEEDS=(0 1 2)
 
 ID=$(( SLURM_ARRAY_TASK_ID - 1 ))
-ENV_NAME="${ENVS[$(( ID / 3 ))]}"
+ALG="${ALGS[$(( ID / 12 ))]}"
+ENV_NAME="${ENVS[$(( (ID % 12) / 3 ))]}"
 SEED="${SEEDS[$(( ID % 3 ))]}"
-ALG="cpl"
 
 BUDGET="${BUDGET:-10000}"
 TOTAL_STEPS="${TOTAL_STEPS:-500000}"
@@ -86,7 +91,11 @@ CONFIG_DIR="${CONFIG_DIR:-configs/mw_state_dense}"
 [[ "$LABELS_DIR" != /* ]] && LABELS_DIR="${REPO_ROOT}/${LABELS_DIR}"
 [[ "$RUNS_DIR"   != /* ]] && RUNS_DIR="${REPO_ROOT}/${RUNS_DIR}"
 
-CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/scalar_window_cpl.yaml"
+declare -A ALG_CONFIG
+ALG_CONFIG[cpl]=scalar_window_cpl.yaml
+ALG_CONFIG[piql]=credit_piql.yaml
+
+CONFIG_PATH="${REPO_ROOT}/${CONFIG_DIR}/${ALG_CONFIG[$ALG]}"
 LABELS_NPZ="${LABELS_DIR}/${ENV_NAME}/${LABEL_FILE}"
 RUN_PATH="${RUNS_DIR}/${ENV_NAME}/${TYPE_NAME}/${ALG}_s${SEED}"
 
@@ -144,8 +153,19 @@ fi
 
 mkdir -p "$RUN_PATH"
 
-# ── CPL settings (identical to the b10k baselines) ────────────────────────────
-export WANDB_PROJECT="${CPL_WANDB_PROJECT:-mw-cpl-b10k}"
+# ── Per-alg settings (identical to the b10k baselines) ────────────────────────
+EXTRA_SETS=(--set "trainer_kwargs.total_steps=${TOTAL_STEPS}")
+if [[ "$ALG" == "cpl" ]]; then
+    export WANDB_PROJECT="${CPL_WANDB_PROJECT:-mw-cpl-b10k}"
+    EXTRA_SETS+=(--set "alg_kwargs.alpha=0.1")
+    EXTRA_SETS+=(--set "alg_kwargs.contrastive_bias=0.75")
+    EXTRA_SETS+=(--set "alg_kwargs.bc_steps=0")
+    EXTRA_SETS+=(--set "alg_kwargs.bc_coeff=0.0")
+else
+    export WANDB_PROJECT="${PIQL_WANDB_PROJECT:-mw-piql-b10k}"
+fi
+
+# ── WandB ─────────────────────────────────────────────────────────────────────
 export WANDB_RUN_NAME="${ENV_NAME}/${TYPE_NAME}/${ALG}_s${SEED}"
 export WANDB_GROUP="${ENV_NAME}/${TYPE_NAME}"
 
@@ -160,11 +180,7 @@ python3 "${REPO_ROOT}/scripts/train.py" \
     --set "dataset_kwargs.capacity=${EFFECTIVE_CAPACITY}"            \
     --set "dataset_kwargs.subsample_n=null"                          \
     --set "budget=${BUDGET}"                                         \
-    --set "trainer_kwargs.total_steps=${TOTAL_STEPS}"                \
-    --set "alg_kwargs.alpha=0.1"                                     \
-    --set "alg_kwargs.contrastive_bias=0.75"                         \
-    --set "alg_kwargs.bc_steps=0"                                    \
-    --set "alg_kwargs.bc_coeff=0.0"
+    "${EXTRA_SETS[@]}"
 
 # Write sentinel only on clean exit (all steps reached).
 touch "${RUN_PATH}/training_complete"

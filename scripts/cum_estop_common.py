@@ -193,8 +193,13 @@ def discounted_length(L: int, gamma: float) -> float:
 # ---------------------------------------------------------------------------
 
 def rollout_policy(env, state_t: np.ndarray, policy, horizon: int, device: str,
-                    stochastic: bool = True) -> Dict:
+                    stochastic: bool = True, first_obs: Optional[np.ndarray] = None) -> Dict:
     """Restore env to state_t and roll `policy` forward for `horizon` steps.
+
+    first_obs: the true observation at state_t (e.g. the pool's stored obs),
+    used in place of the restored one. set_state can't restore MetaWorld's
+    previous-frame object dims, so the restored obs is stale there; every
+    later step is correct, since get_obs() refreshes the env's _prev_obs.
 
     Returns dict:
         obs       : (n_steps, obs_dim)  pre-step states, index 0 = s_t
@@ -204,6 +209,8 @@ def rollout_policy(env, state_t: np.ndarray, policy, horizon: int, device: str,
         n_steps   : int  (< horizon only if the env signalled done early)
     """
     obs = restore_state(env, state_t)
+    if first_obs is not None:
+        obs = first_obs.astype(np.float32)
     obs_list, act_list, rew_list = [], [], []
     done = False
     for _ in range(horizon):
@@ -212,7 +219,9 @@ def rollout_policy(env, state_t: np.ndarray, policy, horizon: int, device: str,
             obs_enc = policy.network.encoder(obs_t)
             dist = policy.network.actor(obs_enc)
             if isinstance(dist, torch.distributions.Distribution):
-                action = dist.sample() if stochastic else dist.mean
+                # deterministic = tanh(loc), as in predict(sample=False): the
+                # squashed Normal has no closed-form .mean
+                action = dist.sample() if stochastic else dist.base_dist.loc
             else:
                 action = dist
             action = action.squeeze(0).cpu().numpy()

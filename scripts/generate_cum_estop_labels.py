@@ -1,17 +1,27 @@
 """
 Phases 3, 5, 6 of the Cumulative E-stop model: for each pool segment, find
 the first cumulative-deficit threshold crossing (or none), then either
-  - generate ONE correction rollout from an intermediate-quality checkpoint
-    bank (Pi_M), starting exactly at the stop state s_tau, and compare it
-    HONESTLY against the original continuation: whichever side actually
-    scores higher becomes the preferred arm (sometimes the correction,
-    sometimes the original). No margin, no retrying across checkpoints to
-    find a bigger gap -- the original behavior policy already succeeds
-    ~50% of the time, so searching for the best of several draws would
-    systematically bias toward larger, less representative gaps than a
-    single honest comparison gives. The retry budget here exists only to
-    recover from a rollout that terminates early (a simulator failure, not
-    a quality judgment), not to search for a better outcome; or
+  - generate ONE correction rollout starting exactly at the stop state s_tau
+    and running to the end of the segment. Who corrects is set by
+    --correction-policy:
+      oracle (default): the frozen oracle, acting deterministically -- the
+        human takes over at the stop and behaves optimally from there on.
+        The corrected trajectory is always the preferred arm (the stopping
+        model assumes the human's correction c* beats the robot's expected
+        behavior); its oracle score margin is still recorded in `gap` and
+        can be negative.
+      intermediate: a random draw from an intermediate-quality checkpoint
+        bank (Pi_M), sampling actions, compared HONESTLY against the
+        original continuation: whichever side actually scores higher
+        becomes the preferred arm (sometimes the correction, sometimes the
+        original). No margin, no retrying across checkpoints to find a
+        bigger gap -- the original behavior policy already succeeds ~50% of
+        the time, so searching for the best of several draws would
+        systematically bias toward larger, less representative gaps than a
+        single honest comparison gives. The retry budget here exists only
+        to recover from a rollout that terminates early (a simulator
+        failure, not a quality judgment), not to search for a better
+        outcome; or
   - (no stop) generate and verify one substantially-worse counterfactual from
     a weak checkpoint bank (Pi_B), starting at s_0, keeping the full original
     rollout as the accepted demonstration. Unchanged: this branch is supposed
@@ -23,10 +33,14 @@ trajectories -- no padding/masking needed at all, so no new buffer class is
 needed on the training side):
 
     <output-dir>/<env>/stop_correction_labels.npz
-        obs/action/reward : (N, 2, T, ...)   index 0 = preferred (whichever of
-                                               corrected/original scored higher),
+        obs/action/reward : (N, 2, T, ...)   index 0 = preferred (oracle: always
+                                               the corrected arm; intermediate:
+                                               whichever scored higher),
                                                index 1 = the other one
         stop_index, checkpoint_step, gap, attempts, corrected_is_preferred : (N,)
+        gap = U_E(preferred suffix) - U_E(other suffix) from s_tau: >= 0 for
+        intermediate, signed for oracle (< 0 = the oracle's critic scores its
+        own correction below the original)
 
     <output-dir>/<env>/no_stop_demo_labels.npz
         obs/action/reward : (N, 2, T, ...)   index 0 = accepted demo (preferred),
@@ -57,7 +71,7 @@ import numpy as np
 import scripts.cum_estop_common as cec
 
 
-def _load_envs(run_dir, oracle_checkpoint, bands, device):
+def _load_envs(run_dir, oracle_checkpoint, bands, device, correction_policy):
     """Module-level (not a local closure) so functools.partial(...) over it
     stays picklable under multiprocessing's spawn context -- a bare nested
     closure isn't."""
@@ -68,7 +82,7 @@ def _load_envs(run_dir, oracle_checkpoint, bands, device):
             run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
         )
         for b in bands["intermediate"]
-    }
+    } if correction_policy == "intermediate" else {}
     weak = {
         b["checkpoint"]: cec.load_policy_weights_only(
             run_dir, os.path.join(run_dir, b["checkpoint"]), obs_space, act_space, device,
@@ -80,19 +94,23 @@ def _load_envs(run_dir, oracle_checkpoint, bands, device):
 
 def _correction_attempt(ctx, pool_index, attempt, tau, T, obs_i, action_i, reward_i, state_i,
                          original_suffix_score):
-    """One correction rollout. Returns (ok, result_dict_or_None) -- ok=False
-    only on early termination (a simulator failure to retry past), never on
-    "didn't win": the correction is compared honestly against the original,
-    and whichever side actually scores higher becomes the preferred arm. No
+    """One correction rollout from s_tau. Returns (ok, result_dict_or_None) --
+    ok=False only on early termination (a simulator failure to retry past),
+    never on "didn't win". An oracle correction is always the preferred arm;
+    an intermediate one is compared honestly against the original, and
+    whichever side actually scores higher becomes the preferred arm. No
     cherry-picking across retries for a bigger gap."""
-    names = list(ctx["intermediate"].keys())
-    rng = np.random.default_rng((ctx["seed"], pool_index, attempt))
-    name = names[rng.integers(len(names))]
-    policy = ctx["intermediate"][name]
+    if ctx["correction_policy"] == "oracle":
+        name, policy, stochastic = ctx["oracle_checkpoint"], ctx["oracle"], False
+    else:
+        names = list(ctx["intermediate"].keys())
+        rng = np.random.default_rng((ctx["seed"], pool_index, attempt))
+        name = names[rng.integers(len(names))]
+        policy, stochastic = ctx["intermediate"][name], True
     horizon = T - tau
 
     correction = cec.rollout_policy(ctx["env"], state_i[tau], policy, horizon, ctx["device"],
-                                     stochastic=True)
+                                     stochastic=stochastic, first_obs=obs_i[tau])
     if correction["n_steps"] < horizon:
         return False, None  # early termination -- retry with a different checkpoint draw
 
@@ -108,12 +126,12 @@ def _correction_attempt(ctx, pool_index, attempt, tau, T, obs_i, action_i, rewar
     }
     original = {"obs": obs_i, "action": action_i, "reward": reward_i}
 
-    corrected_is_preferred = bool(gap >= 0)
+    corrected_is_preferred = ctx["correction_policy"] == "oracle" or bool(gap >= 0)
     preferred, other = (corrected, original) if corrected_is_preferred else (original, corrected)
 
     return True, {
         "preferred": preferred, "other": other,
-        "checkpoint": name, "gap": float(abs(gap)), "attempts": attempt + 1,
+        "checkpoint": name, "gap": float(gap if corrected_is_preferred else -gap), "attempts": attempt + 1,
         "corrected_is_preferred": corrected_is_preferred,
     }
 
@@ -125,7 +143,8 @@ def _try_negative(ctx, pool_index, attempt, T, obs_i, action_i, reward_i, state_
     name = names[rng.integers(len(names))]
     policy = ctx["weak"][name]
 
-    bad = cec.rollout_policy(ctx["env"], state_i[0], policy, T, ctx["device"], stochastic=True)
+    bad = cec.rollout_policy(ctx["env"], state_i[0], policy, T, ctx["device"], stochastic=True,
+                              first_obs=obs_i[0])
     if bad["n_steps"] < T:
         return False, None
 
@@ -157,7 +176,9 @@ def _process_task(task):
 
     if tau is not None:
         original_suffix_score = cec.segment_score(reward_i[tau:], values[tau:], ctx["gamma"])
-        for attempt in range(ctx["correction_budget"]):
+        # a deterministic oracle rollout would only repeat itself on a retry
+        budget = 1 if ctx["correction_policy"] == "oracle" else ctx["correction_budget"]
+        for attempt in range(budget):
             ok, result = _correction_attempt(
                 ctx, i, attempt, tau, T, obs_i, action_i, reward_i, state_i, original_suffix_score,
             )
@@ -182,6 +203,9 @@ def main():
     parser.add_argument("--oracle-checkpoint", type=str, default="best_model.pt")
     parser.add_argument("--bands-path", type=str, required=True)
     parser.add_argument("--H", type=float, required=True, help="cumulative deficit threshold")
+    parser.add_argument("--correction-policy", choices=["oracle", "intermediate"], default="oracle",
+                         help="who takes over at the stop: the frozen oracle acting deterministically "
+                              "(always preferred), or a random Pi_M bank draw compared honestly")
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--mcmc-samples", type=int, default=32)
     parser.add_argument("--delta-n", type=float, default=0.3,
@@ -239,9 +263,10 @@ def main():
         gamma=args.gamma, mcmc_samples=args.mcmc_samples, H=args.H, device=args.device,
         delta_n=args.delta_n,
         correction_budget=args.correction_budget, negative_budget=args.negative_budget,
-        seed=args.seed,
+        seed=args.seed, correction_policy=args.correction_policy, oracle_checkpoint=args.oracle_checkpoint,
     )
-    make_envs_fn = functools.partial(_load_envs, args.run_dir, args.oracle_checkpoint, bands, args.device)
+    make_envs_fn = functools.partial(_load_envs, args.run_dir, args.oracle_checkpoint, bands, args.device,
+                                     args.correction_policy)
     results = cec.run_parallel(tasks, args.n_workers, make_envs_fn, _process_task, worker_kwargs)
 
     stop_rows, demo_rows, unresolved_rows = [], [], []
@@ -283,9 +308,10 @@ def main():
             H=np.full(len(stop_rows), args.H, dtype=np.float32),
         )
     if demo_rows:
-        obs = np.stack([np.stack([r[1]["obs"], r[2]["original_obs"]]) for r in demo_rows])
-        action = np.stack([np.stack([r[1]["action"], r[2]["original_action"]]) for r in demo_rows])
-        reward = np.stack([np.stack([r[1]["reward"], r[2]["original_reward"]]) for r in demo_rows])
+        # index 0 = the accepted original (preferred), index 1 = the Pi_B counterfactual
+        obs = np.stack([np.stack([r[2]["original_obs"], r[1]["obs"]]) for r in demo_rows])
+        action = np.stack([np.stack([r[2]["original_action"], r[1]["action"]]) for r in demo_rows])
+        reward = np.stack([np.stack([r[2]["original_reward"], r[1]["reward"]]) for r in demo_rows])
         cec.save_npz(
             os.path.join(out_dir, f"no_stop_demo_labels{suffix}.npz"),
             obs=obs.astype(np.float32), action=action.astype(np.float32), reward=reward.astype(np.float32),
@@ -303,6 +329,10 @@ def main():
 
     print(f"stop_correction pairs: {len(stop_rows)}  no_stop_demo pairs: {len(demo_rows)}  "
           f"unresolved: {len(unresolved_rows)}  (of {len(shard_idx)} segments in this shard)")
+    if stop_rows and args.correction_policy == "oracle":
+        gaps = np.array([r[2]["gap"] for r in stop_rows])
+        print(f"oracle corrections scored below the original suffix: {np.mean(gaps < 0):.1%}  "
+              f"(gap median {np.median(gaps):.3f})")
 
 
 if __name__ == "__main__":

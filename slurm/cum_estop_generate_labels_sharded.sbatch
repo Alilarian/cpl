@@ -38,7 +38,9 @@
 #   GAMMA               default: 0.99
 #   MCMC_SAMPLES        default: 32
 #   DELTA_N             default: 0.3
-#   CORRECTION_BUDGET   default: 8 (retries only on simulator early-termination, not quality -- a
+#   CORRECTION_POLICY   default: oracle (the frozen oracle takes over at the stop, deterministic,
+#                                 always preferred); intermediate = the original Pi_M-bank correction
+#   CORRECTION_BUDGET   default: 8, intermediate only (retries only on simulator early-termination, not quality -- a
 #                                 correction is accepted on the first completed rollout regardless of
 #                                 whether it beats the original; whichever side scores higher wins)
 #   NEGATIVE_BUDGET     default: 8
@@ -85,6 +87,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-/scratch/general/vast/u1472210/cum_estop_labels}"
 GAMMA="${GAMMA:-0.99}"
 MCMC_SAMPLES="${MCMC_SAMPLES:-32}"
 DELTA_N="${DELTA_N:-0.3}"
+CORRECTION_POLICY="${CORRECTION_POLICY:-oracle}"
 CORRECTION_BUDGET="${CORRECTION_BUDGET:-8}"
 NEGATIVE_BUDGET="${NEGATIVE_BUDGET:-8}"
 NUM_SHARDS="${NUM_SHARDS:-8}"
@@ -130,6 +133,10 @@ fi
 . "${REPO_ROOT}/setup_shell.sh"
 mkdir -p "${OUTPUT_DIR}/${ENV_NAME}"
 
+# One torch thread per worker process: by default each of the N_WORKERS
+# processes uses every core, which oversubscribes the CPUs (~5x slower locally).
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+
 EXTRA_ARGS=()
 if [[ -n "$SUBSAMPLE_N" ]]; then
     EXTRA_ARGS+=(--subsample-n "$SUBSAMPLE_N" --subsample-seed "$SUBSAMPLE_SEED")
@@ -144,6 +151,7 @@ python3 "${REPO_ROOT}/scripts/generate_cum_estop_labels.py" \
     --gamma "$GAMMA" \
     --mcmc-samples "$MCMC_SAMPLES" \
     --delta-n "$DELTA_N" \
+    --correction-policy "$CORRECTION_POLICY" \
     --correction-budget "$CORRECTION_BUDGET" \
     --negative-budget "$NEGATIVE_BUDGET" \
     --n-workers "$N_WORKERS" \

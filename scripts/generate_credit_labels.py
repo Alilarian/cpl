@@ -1,13 +1,14 @@
 """
 Generate credit assignment feedback labels for MetaWorld environments.
 
-For each pool trajectory, all contiguous subsegments of length k are scored
-with oracle rl_sum.  The oracle selects the highest-scoring window as the
+For each pool trajectory, the subsegments of length k starting at every
+multiple of --stride (starts = arange(0, T-k+1, stride)) are scored with
+oracle rl_sum.  The oracle selects the highest-scoring window as the
 "credited" subsegment (argmax).  This is the MetaWorld analogue of the PM
 credit_assignment type in generate_pm_feedback.py.
 
 Efficient implementation: V(s_t) is computed once for every obs in the pool
-via batched MCMC, then all C = T-k+1 window scores per trajectory are
+via batched MCMC, then all C = len(starts) window scores per trajectory are
 computed analytically from prefix reward sums and the precomputed V array.
 This costs the same as scoring the full pool once, regardless of C.
 
@@ -20,6 +21,8 @@ Output (--output-dir/<env>/credit_labels.npz):
     adv_scores  : (N, C)              oracle rl_sum per candidate
     chosen_idx  : (N,) int32          argmax window per trajectory
     checkpoint_step : (N,)
+    window_starts   : (C,) int32      start step of each window
+    stride          : ()
 
 Dataset : PMCreditAssignmentBuffer
 Alg     : CreditAssignmentCPL  (bc_steps=0 for no warmup)
@@ -34,6 +37,9 @@ Usage:
 
 Parameters:
     --subsegment-len k : length of each candidate window (default: 20)
+    --stride           : step between window starts (default: 1); must cover
+                         every step: stride <= k and (T-k) % stride == 0
+                         (T=64, k=20: 1, 2, 4 or 11)
     --n-examples       : cap on output examples (default: no cap)
 """
 
@@ -115,7 +121,10 @@ def main():
     parser.add_argument("--oracle-checkpoint", type=str, default="best_model.pt",
                         help="Oracle checkpoint filename (default: best_model.pt)")
     parser.add_argument("--subsegment-len", type=int, default=20,
-                        help="Window length k (default: 20); C = T-k+1 candidates per traj")
+                        help="Window length k (default: 20)")
+    parser.add_argument("--stride", type=int, default=1,
+                        help="Step between window starts (default: 1); "
+                             "starts = arange(0, T-k+1, stride), C = len(starts)")
     parser.add_argument("--n-examples", type=int, default=None,
                         help="Cap on output examples (pool trajectories; default: all)")
     parser.add_argument("--batch-size", type=int, default=256,
@@ -148,6 +157,7 @@ def main():
     print(f"Pool path        : {args.pool_path}")
     print(f"Oracle dir       : {args.run_dir}")
     print(f"Subsegment len k : {args.subsegment_len}")
+    print(f"Stride           : {args.stride}")
     print(f"N-examples cap   : {args.n_examples if args.n_examples else 'no cap'}")
     print(f"Batch size       : {args.batch_size}")
     print(f"MCMC samples     : {args.mcmc_samples}")
@@ -168,13 +178,18 @@ def main():
     N, T, obs_dim = pool_obs.shape
     act_dim = pool_action.shape[2]
     k = args.subsegment_len
-    C = T - k + 1
+    starts = np.arange(0, T - k + 1, args.stride)
+    C = len(starts)
 
     print(f"  N={N:,} segments  T={T}  obs_dim={obs_dim}  act_dim={act_dim}")
-    print(f"  k={k}  C={C} candidates per trajectory")
+    print(f"  k={k}  stride={args.stride}  C={C} candidates per trajectory")
 
     if k >= T:
         print(f"ERROR: --subsegment-len {k} must be < T={T}")
+        return
+    if args.stride > k or starts[-1] + k != T:
+        print(f"ERROR: --stride {args.stride} leaves steps uncovered "
+              f"(need stride <= k={k} and (T-k)={T - k} divisible by stride)")
         return
     if C < 2:
         print(f"ERROR: only {C} window — need C >= 2 (reduce k or use longer pool segments)")
@@ -234,8 +249,8 @@ def main():
 
     # window_score[n, i] = (prefix[n, i+k-1] - prefix[n, i]) + V[n, i+k-1] - V[n, i]
     win_scores = np.empty((N, C), dtype=np.float32)
-    for i in range(C):
-        win_scores[:, i] = (
+    for j, i in enumerate(starts):
+        win_scores[:, j] = (
             (reward_prefix[:, i + k - 1] - reward_prefix[:, i]).astype(np.float32)
             + V_all[:, i + k - 1] - V_all[:, i]
         )
@@ -248,10 +263,10 @@ def main():
     # ------------------------------------------------------------------
     print(f"\nBuilding {N:,} × {C} × {k} observation windows ...")
     all_win_obs = np.stack(
-        [pool_obs[:, i:i + k] for i in range(C)], axis=1
+        [pool_obs[:, i:i + k] for i in starts], axis=1
     ).astype(np.float32)                                          # (N, C, k, obs_dim)
     all_win_act = np.stack(
-        [pool_action[:, i:i + k] for i in range(C)], axis=1
+        [pool_action[:, i:i + k] for i in starts], axis=1
     ).astype(np.float32)                                          # (N, C, k, act_dim)
 
     # ------------------------------------------------------------------
@@ -306,6 +321,8 @@ def main():
         adv_scores=win_scores,
         chosen_idx=chosen_idx,
         checkpoint_step=pool_ckpt.astype(np.int64),
+        window_starts=starts.astype(np.int32),
+        stride=np.int64(args.stride),
     )
 
     print(f"\nSaved → {out_path}")

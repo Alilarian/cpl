@@ -12,8 +12,9 @@
 #   rsync -avPR datasets/mw_de_labels/./mw_*/scalar_window_labels.npz \
 #       chpc-notch:/scratch/general/vast/u1472210/scalar_window_labels/
 #
-# Walltime: 8h for CPL, 16h for PIQL, same as the stride-11 credit runs; rows
-# here are 3 subsegments of 10 steps, smaller than credit's 5 windows of 20.
+# Walltime: 4h for CPL, 8h for PIQL. A batch is 32 rows x 3 subsegments x 10
+# steps (960 transitions), far smaller than the cum_estop PIQL runs (~12k) that
+# took 0.010-0.030 s/step on rai-gpu-grn, i.e. ~1.5-4h for 500k steps.
 #
 # Resume: a task killed by its walltime resumes from its run dir's
 # final_model.pt -- resubmit just that task, e.g.
@@ -49,11 +50,11 @@ export DEVICE=cuda
 export CONDA_ENV_NAME="${CONDA_ENV_NAME:-cpl_gpu}"
 
 if [[ "$WHICH" == "cpl" || "$WHICH" == "all" ]]; then
-    sbatch --job-name=scalar_window_cpl --array="${ARRAY:-1-12}" --time=08:00:00 "${COMMON[@]}" \
+    sbatch --job-name=scalar_window_cpl --array="${ARRAY:-1-12}" --time=04:00:00 "${COMMON[@]}" \
         slurm/mw_b10k_scalar_window.sbatch
 fi
 
 if [[ "$WHICH" == "piql" || "$WHICH" == "all" ]]; then
-    sbatch --job-name=scalar_window_piql --array="${ARRAY:-13-24}" --time=16:00:00 "${COMMON[@]}" \
+    sbatch --job-name=scalar_window_piql --array="${ARRAY:-13-24}" --time=08:00:00 "${COMMON[@]}" \
         slurm/mw_b10k_scalar_window.sbatch
 fi

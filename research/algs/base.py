@@ -273,7 +273,9 @@ class Algorithm(ABC):
         If we haven't created the optimizers and schedulers, do not load those.
         """
         print("[research] loading checkpoint:", checkpoint)
-        checkpoint = torch.load(checkpoint, map_location=self.device)
+        # weights_only=False keeps the pre-2.6 behavior (our own checkpoints), so resuming works the same in
+        # cpl_gpu (torch 2.5) and cpl_gpu_bw (torch 2.7, Blackwell), whose default became weights_only=True.
+        checkpoint = torch.load(checkpoint, map_location=self.device, weights_only=False)
         remaining_checkpoint_keys = set(checkpoint.keys())
 
         # First load everything except for the optim

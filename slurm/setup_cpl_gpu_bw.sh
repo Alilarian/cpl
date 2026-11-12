@@ -36,8 +36,10 @@ fi
 module load miniconda3
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
+# Same setup as a job (setup_shell.sh: conda env, LD_LIBRARY_PATH for mujoco_py).
 check() {
-    python - <<'EOF'
+    ( set +eu; export REPO_ROOT="$PWD" CONDA_ENV_NAME="$BW_ENV"; . ./setup_shell.sh >/dev/null </dev/null
+      python - <<'EOF'
 import torch, torchvision
 print("torch", torch.__version__, "| torchvision", torchvision.__version__, "| CUDA", torch.version.cuda)
 print("arch list:", torch.cuda.get_arch_list())
@@ -52,10 +54,10 @@ else:
 import research  # loads torchvision through research.processors
 print("import research OK")
 EOF
+    )
 }
 
 if [[ "${1:-}" == "--check" ]]; then
-    conda activate "$BW_ENV"
     check
     exit 0
 fi

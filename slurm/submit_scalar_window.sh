@@ -1,6 +1,6 @@
 #!/bin/bash
 # Submits the window-choice scalar CPL and PIQL runs (4 envs x 3 seeds each)
-# on rai-gpu-grn through slurm/mw_b10k_scalar_window.sbatch.
+# on soc-gpu-class-grn through slurm/mw_b10k_scalar_window.sbatch.
 #
 #   cpl  : tasks 1-12
 #   piql : tasks 13-24
@@ -22,6 +22,8 @@
 #
 # Optional env overrides:
 #   ARRAY           override the --array spec for the chosen family
+#   WANDB_MODE      default: offline  (runs are written to ~/wandb/wandb/offline-run-*;
+#                   upload them later with `wandb sync`). WANDB_MODE=online logs live.
 #   CONDA_ENV_NAME  default: cpl_gpu
 #   (plus any override documented in slurm/mw_b10k_scalar_window.sbatch)
 
@@ -39,15 +41,16 @@ fi
 mkdir -p slurm/logs
 
 COMMON=(
-    --partition=rai-gpu-grn
-    --qos=rai-gpu-grn
-    --account=rai
+    --partition=soc-gpu-class-grn
+    --qos=soc-gpu-students-grn
+    --account=dbrown
     --gres=gpu:1
     --cpus-per-task=8
     --mem=64G
 )
 export DEVICE=cuda
 export CONDA_ENV_NAME="${CONDA_ENV_NAME:-cpl_gpu}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
 
 if [[ "$WHICH" == "cpl" || "$WHICH" == "all" ]]; then
     sbatch --job-name=scalar_window_cpl --array="${ARRAY:-1-12}" --time=04:00:00 "${COMMON[@]}" \
